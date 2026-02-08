@@ -1,8 +1,8 @@
+use num_traits::Pow;
+use rand::Rng;
 use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
-use num_traits::Pow;
-use rand::Rng;
 
 pub struct ScalarLattice4D {
     pub sites: Vec<UnsafeCell<f64>>,
@@ -57,7 +57,7 @@ impl ScalarLattice4D {
         let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
         sum / self.sites.len() as f64
     }
-    
+
     /// Computes the variance of the lattice
     pub fn variance(&self) -> f64 {
         let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
@@ -67,7 +67,7 @@ impl ScalarLattice4D {
     pub fn filled(sizes: [usize; 4], fill_value: f64) -> Self {
         let [t, x, y, z] = sizes;
         let mut sites = Vec::with_capacity(t * x * y * z);
-        
+
         for _ in 0..(t * x * y * z) {
             sites.push(UnsafeCell::new(fill_value));
         }
@@ -195,7 +195,10 @@ mod tests {
             let idx = lattice.to_index(coords);
 
             println!("{coords:?}");
-            assert_eq!(i, idx, "Conversion between indices and coordinates is incorrect!");
+            assert_eq!(
+                i, idx,
+                "Conversion between indices and coordinates is incorrect!"
+            );
         }
     }
 

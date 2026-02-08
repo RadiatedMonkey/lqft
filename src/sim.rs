@@ -1,16 +1,16 @@
-use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicUsize;
-use std::ops::Range;
+use crate::lattice::ScalarLattice4D;
 use atomic_float::AtomicF64;
 use num_traits::Pow;
 use rand::Rng;
-use crate::lattice::ScalarLattice4D;
+use std::ops::Range;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 use rayon::prelude::*;
 
 pub enum InitialFieldValue {
     Fixed(f64),
-    RandomRange(Range<f64>)
+    RandomRange(Range<f64>),
 }
 
 pub struct SimBuilder {
@@ -24,14 +24,21 @@ pub struct SimBuilder {
     acceptance_update_interval: usize,
 
     mass_squared: f64,
-    bare_coupling: f64
+    bare_coupling: f64,
 }
 
 impl SimBuilder {
     pub fn new() -> Self {
         Self {
-            spacing: 0.05, sizes: [100; 4], initial_value: InitialFieldValue::Fixed(0.0), initial_step_size: 0.3, mass_squared: 1.0, bare_coupling: 0.0,
-            lower_acceptance: 0.78, upper_acceptance: 0.82, acceptance_update_interval: 1000
+            spacing: 0.05,
+            sizes: [100; 4],
+            initial_value: InitialFieldValue::Fixed(0.0),
+            initial_step_size: 0.3,
+            mass_squared: 1.0,
+            bare_coupling: 0.0,
+            lower_acceptance: 0.78,
+            upper_acceptance: 0.82,
+            acceptance_update_interval: 1000,
         }
     }
 
@@ -95,21 +102,26 @@ impl SimBuilder {
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<Sim> {
         let lattice = match self.initial_value {
-            InitialFieldValue::Fixed(val) => {
-                ScalarLattice4D::filled(self.sizes, val)
-            },
-            InitialFieldValue::RandomRange(range) => {
-                ScalarLattice4D::random(self.sizes, range)
-            }
+            InitialFieldValue::Fixed(val) => ScalarLattice4D::filled(self.sizes, val),
+            InitialFieldValue::RandomRange(range) => ScalarLattice4D::random(self.sizes, range),
         };
 
         let mut sim = Sim {
-            lattice, spacing: self.spacing, step_size: AtomicF64::new(self.initial_step_size), mass_squared: self.mass_squared, coupling: self.bare_coupling,
-            lower_acceptance: self.lower_acceptance, upper_acceptance: self.upper_acceptance, stats: SimStatistics::default(), acceptance_interval: self.acceptance_update_interval
+            lattice,
+            spacing: self.spacing,
+            step_size: AtomicF64::new(self.initial_step_size),
+            mass_squared: self.mass_squared,
+            coupling: self.bare_coupling,
+            lower_acceptance: self.lower_acceptance,
+            upper_acceptance: self.upper_acceptance,
+            stats: SimStatistics::default(),
+            acceptance_interval: self.acceptance_update_interval,
         };
 
         let first_action = sim.compute_full_action();
-        sim.stats.current_action.store(first_action, Ordering::Release);
+        sim.stats
+            .current_action
+            .store(first_action, Ordering::Release);
         sim.stats.action_history.push(first_action);
 
         Ok(sim)
@@ -141,7 +153,7 @@ pub struct SimStatistics {
     /// History of the action over time.
     pub action_history: Vec<f64>,
     /// The action at the current point in time.
-    pub current_action: AtomicF64
+    pub current_action: AtomicF64,
 }
 
 impl SimStatistics {
@@ -166,7 +178,7 @@ impl Default for SimStatistics {
             dvar_history: Vec::new(),
             mean_history: Vec::new(),
             meansq_history: Vec::new(),
-            action_history: Vec::new()
+            action_history: Vec::new(),
         }
     }
 }
@@ -183,7 +195,7 @@ pub struct Sim {
     lower_acceptance: f64,
     upper_acceptance: f64,
 
-    stats: SimStatistics
+    stats: SimStatistics,
 }
 
 impl Sim {
@@ -203,20 +215,16 @@ impl Sim {
     // Check whether the current field variation is correct, otherwise adjusts it slightly.
     fn update_step_size(&self) {
         let acceptance_ratio = self.accepted_moves() as f64 / self.total_moves() as f64;
-        
+
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.lower_acceptance {
-            let _ = self.step_size.fetch_update(
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-                |f| Some(f * 0.95) 
-            );
+            let _ = self
+                .step_size
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 0.95));
         } else if acceptance_ratio > self.upper_acceptance {
-            let _ = self.step_size.fetch_update(
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-                |f| Some(f * 1.05)
-            );
+            let _ = self
+                .step_size
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 1.05));
         }
     }
 
@@ -234,7 +242,7 @@ impl Sim {
                 let orig = self.lattice.from_index(i);
                 let fneigh = self.lattice.get_forward_neighbor(orig, j);
                 let bneigh = self.lattice.get_backward_neighbor(orig, j);
-                
+
                 // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
                 let fneigh_val = unsafe { *self.lattice[fneigh].get() };
                 let bneigh_val = unsafe { *self.lattice[bneigh].get() };
@@ -270,13 +278,15 @@ impl Sim {
             let orig = self.lattice.from_index(site);
             let fneigh = self.lattice.get_forward_neighbor(orig, i);
             let bneigh = self.lattice.get_backward_neighbor(orig, i);
-            
+
             // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
             let fneigh_val = unsafe { *self.lattice[fneigh].get() };
             let bneigh_val = unsafe { *self.lattice[bneigh].get() };
 
-            curr_der_sum += ((fneigh_val - curr_val) / a).pow(2) + ((curr_val - bneigh_val) / a).pow(2);
-            new_der_sum += ((fneigh_val - new_val) / a).pow(2) + ((new_val - bneigh_val) / a).pow(2);
+            curr_der_sum +=
+                ((fneigh_val - curr_val) / a).pow(2) + ((curr_val - bneigh_val) / a).pow(2);
+            new_der_sum +=
+                ((fneigh_val - new_val) / a).pow(2) + ((new_val - bneigh_val) / a).pow(2);
         }
 
         let kinetic_delta = 0.5 * (new_der_sum - curr_der_sum);
@@ -289,7 +299,9 @@ impl Sim {
 
         self.stats.total_moves.fetch_add(1, Ordering::Relaxed);
         if realised < accept_prob {
-            self.stats.current_action.fetch_add(total_delta, Ordering::AcqRel);
+            self.stats
+                .current_action
+                .fetch_add(total_delta, Ordering::AcqRel);
             self.stats.accepted_moves.fetch_add(1, Ordering::Relaxed);
             return new_val;
         }
@@ -302,7 +314,7 @@ impl Sim {
         let mean = self.lattice.mean();
         let var = self.lattice.variance();
         let action = self.stats.current_action.load(Ordering::Acquire);
-        
+
         self.stats.mean_history.push(mean);
         self.stats.meansq_history.push(var);
         self.stats.action_history.push(action);
@@ -310,13 +322,16 @@ impl Sim {
         let accept = self.accepted_moves();
         let total = self.total_moves();
         let ratio = accept as f64 / total as f64 * 100.0;
-        
+
         self.stats.accepted_move_history.push(self.accepted_moves());
         self.stats.accept_ratio_history.push(ratio);
         self.stats.dvar_history.push(self.step_size());
-        
+
         println!("---------------------------------------------");
-        println!("Sweep progress ({:.2}%): {current_sweep}/{total_sweeps}", current_sweep as f64 / total_sweeps as f64 * 100.0);
+        println!(
+            "Sweep progress ({:.2}%): {current_sweep}/{total_sweeps}",
+            current_sweep as f64 / total_sweeps as f64 * 100.0
+        );
         println!("Acceptance ratio: {:.2}%", ratio);
     }
 
@@ -356,15 +371,19 @@ impl Sim {
                 }
             });
 
-            self.record_stats(i, total_sweeps);     
+            self.record_stats(i, total_sweeps);
             // let thermalised = self.check_thermalisation();
-        }   
+        }
 
         println!("Checkerboard simulation completed");
     }
 
-    pub fn total_moves(&self) -> usize { self.stats.total_moves.load(Ordering::Relaxed) }
-    pub fn accepted_moves(&self) -> usize { self.stats.accepted_moves.load(Ordering::Relaxed) }
+    pub fn total_moves(&self) -> usize {
+        self.stats.total_moves.load(Ordering::Relaxed)
+    }
+    pub fn accepted_moves(&self) -> usize {
+        self.stats.accepted_moves.load(Ordering::Relaxed)
+    }
 
     pub fn lattice(&self) -> &ScalarLattice4D {
         &self.lattice

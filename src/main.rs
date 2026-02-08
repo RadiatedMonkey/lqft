@@ -2,10 +2,10 @@ mod lattice;
 mod sim;
 mod vis;
 
-use std::ops::Range;
-use plotters::prelude::*;
 use crate::lattice::ScalarLattice4D;
 use crate::sim::{InitialFieldValue, SimBuilder};
+use plotters::prelude::*;
+use std::ops::Range;
 
 fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
     let filename = format!("plots/step-{index}.png");
@@ -33,27 +33,29 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
         .draw()?;
 
     let grid = (0..lattice.sizes()[3]).flat_map(|y| (0..lattice.sizes()[2]).map(move |x| (x, y)));
-    chart.draw_series(
-        grid.map(|(y, z)| {
-            let val = unsafe { *lattice[[0, 0, y, z]].get() };
+    chart.draw_series(grid.map(|(y, z)| {
+        let val = unsafe { *lattice[[0, 0, y, z]].get() };
 
-            // Scale val from [-max, max] to [0, 1] for the color mapping
-            // Assuming max fluctuation is around 2.0 based on your previous delta
-            let max_scale = 2.0;
-            let normalized = (val / max_scale).clamp(-1.0, 1.0);
+        // Scale val from [-max, max] to [0, 1] for the color mapping
+        // Assuming max fluctuation is around 2.0 based on your previous delta
+        let max_scale = 2.0;
+        let normalized = (val / max_scale).clamp(-1.0, 1.0);
 
-            let color = if normalized > 0.0 {
-                // Positive: White to Red
-                RGBColor(255, (255.0 * (1.0 - normalized)) as u8, (255.0 * (1.0 - normalized)) as u8)
-            } else {
-                // Negative: White to Blue
-                let n = normalized.abs();
-                RGBColor((255.0 * (1.0 - n)) as u8, (255.0 * (1.0 - n)) as u8, 255)
-            };
+        let color = if normalized > 0.0 {
+            // Positive: White to Red
+            RGBColor(
+                255,
+                (255.0 * (1.0 - normalized)) as u8,
+                (255.0 * (1.0 - normalized)) as u8,
+            )
+        } else {
+            // Negative: White to Blue
+            let n = normalized.abs();
+            RGBColor((255.0 * (1.0 - n)) as u8, (255.0 * (1.0 - n)) as u8, 255)
+        };
 
-            Rectangle::new([(y, z), (y + 1, z + 1)], color.filled())
-        })
-    )?;
+        Rectangle::new([(y, z), (y + 1, z + 1)], color.filled())
+    }))?;
 
     root.present()?;
     println!("Result has been saved to {filename}");
@@ -66,7 +68,7 @@ pub struct GraphData<'a> {
     pub xdata: &'a [f64],
     pub ydata: &'a [f64],
     pub xlim: Range<f64>,
-    pub ylim: Range<f64>
+    pub ylim: Range<f64>,
 }
 
 impl<'a> Default for GraphData<'a> {
@@ -76,7 +78,7 @@ impl<'a> Default for GraphData<'a> {
             xdata: &[],
             ydata: &[],
             xlim: 0.0..0.0,
-            ylim: 0.0..0.0
+            ylim: 0.0..0.0,
         }
     }
 }
@@ -84,21 +86,23 @@ impl<'a> Default for GraphData<'a> {
 pub struct GraphDesc<'a, 'b> {
     pub file: &'a str,
     pub graphs: &'a [GraphData<'b>],
-    pub layout: (usize, usize)
+    pub layout: (usize, usize),
 }
 
 /// Custom function to find the smallest float in a slice since floats don't implement Eq.
 fn find_min(data: &[f64]) -> f64 {
-    data.iter().copied().reduce(|a, b| {
-        if a.total_cmp(&b).is_lt() { a } else { b }
-    }).unwrap_or(0.0)
+    data.iter()
+        .copied()
+        .reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
+        .unwrap_or(0.0)
 }
 
 /// Custom function to find the largest float in a slice since floats don't implement Eq.
 fn find_max(data: &[f64]) -> f64 {
-    data.iter().copied().reduce(|a, b| {
-        if a.total_cmp(&b).is_gt() { a } else { b }
-    }).unwrap_or(0.0)
+    data.iter()
+        .copied()
+        .reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
+        .unwrap_or(0.0)
 }
 
 fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
@@ -106,16 +110,16 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
 
     let root = BitMapBackend::new(&filename, (3000, 3000)).into_drawing_area();
     root.fill(&WHITE)?;
-    
+
     let areas = root.split_evenly(desc.layout);
     for (i, area) in areas.iter().enumerate() {
         let opt = desc.graphs.get(i);
         if opt.is_none() {
-            break
+            break;
         }
 
         let graph = opt.unwrap();
-        
+
         let (xmin, xmax) = if graph.xlim.is_empty() {
             (find_min(graph.xdata), find_max(graph.xdata))
         } else {
@@ -127,22 +131,19 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
         } else {
             (graph.ylim.start, graph.ylim.end)
         };
-        
+
         let mut cc = ChartBuilder::on(area)
             .margin(5)
             .x_label_area_size(40)
             .y_label_area_size(40)
             .caption(graph.caption, ("sans-serif", 40))
             .build_cartesian_2d(xmin..xmax, ymin..ymax)?;
-        
-        cc.configure_mesh()
-            .x_labels(10)
-            .y_labels(10)
-            .draw()?;
-        
+
+        cc.configure_mesh().x_labels(10).y_labels(10).draw()?;
+
         cc.draw_series(LineSeries::new(
             graph.xdata.iter().copied().zip(graph.ydata.iter().copied()),
-            &BLUE
+            &BLUE,
         ))?;
     }
 
@@ -174,10 +175,15 @@ fn main() -> anyhow::Result<()> {
 
     let stats = sim.stats();
 
-    let accepted_moves = stats.accepted_move_history.iter().map(|v| *v as f64).collect::<Vec<_>>();
+    let accepted_moves = stats
+        .accepted_move_history
+        .iter()
+        .map(|v| *v as f64)
+        .collect::<Vec<_>>();
     let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
 
-    let variance = stats.mean_history
+    let variance = stats
+        .mean_history
         .iter()
         .zip(stats.meansq_history.iter())
         .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
@@ -241,7 +247,7 @@ fn main() -> anyhow::Result<()> {
             //     ydata: &corr2,
             //     ..Default::default()
             // }
-        ]
+        ],
     };
     plot_function(desc)?;
 
