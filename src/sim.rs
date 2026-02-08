@@ -52,7 +52,7 @@ impl SimBuilder {
 
     /// The starting value of the maximum field variation. The field variation determines
     /// how much the field fluctuates.
-    pub fn initial_variation(mut self, value: f64) -> Self {
+    pub fn initial_step_size(mut self, value: f64) -> Self {
         self.starting_variation = value;
         self
     }
@@ -123,16 +123,28 @@ impl Default for SimBuilder {
 }
 
 pub struct SimStatistics {
+    /// Steps at which statistics were recorded.
+    pub timepoints: Vec<usize>,
+    /// Total moves made in the simulation
     pub total_moves: usize,
+    /// Total moves accepted
     pub accepted_moves: usize,
+    /// History of accepted moves. A new datapoint is recorded on every statistics interval.
+    pub accepted_move_history: Vec<usize>,
+    /// History of accepted move ratio.
     pub accept_ratio_history: Vec<f64>,
+    /// History of the step size.
     pub dvar_history: Vec<f64>,
+    /// History of the field mean
     pub mean_history: Vec<f64>,
+    /// History of the field variance.
     pub var_history: Vec<f64>
 }
 
 impl SimStatistics {
     pub fn reserve_capacity(&mut self, count: usize) {
+        self.timepoints.reserve(count);
+        self.accepted_move_history.reserve(count);
         self.accept_ratio_history.reserve(count);
         self.dvar_history.reserve(count);
         self.mean_history.reserve(count);
@@ -143,12 +155,14 @@ impl SimStatistics {
 impl Default for SimStatistics {
     fn default() -> Self {
         Self {
+            timepoints: Vec::new(),
             total_moves: 0,
+            accepted_move_history: Vec::new(),
             accepted_moves: 0,
-            accept_ratio_history: Vec::with_capacity(100),
-            dvar_history: Vec::with_capacity(100),
-            mean_history: Vec::with_capacity(100),
-            var_history: Vec::with_capacity(100)
+            accept_ratio_history: Vec::new(),
+            dvar_history: Vec::new(),
+            mean_history: Vec::new(),
+            var_history: Vec::new()
         }
     }
 }
@@ -175,13 +189,14 @@ impl Sim {
         &self.stats
     }
 
-    pub fn simulate(&mut self, total_sweeps: usize) {
+    pub fn simulate_sequential(&mut self, total_sweeps: usize) {
         let sweep = self.lattice.sweep_size();
         let step_count = total_sweeps * sweep;
 
         let stats_count = step_count / self.stats_interval;
         self.stats.reserve_capacity(stats_count);
 
+        let mut instant = Instant::now();
         for i in 0..step_count {
             self.timestep();
 
@@ -189,20 +204,25 @@ impl Sim {
             if i % self.stats_interval == 0 {
                 let mean = self.lattice.mean();
                 let var = self.lattice.variance();
-
+                
+                self.stats.timepoints.push(i);
                 self.stats.mean_history.push(mean);
                 self.stats.var_history.push(var);
 
                 let accept = self.stats.accepted_moves;
                 let total = self.stats.total_moves;
                 let ratio = accept as f64 / total as f64 * 100.0;
-
+                
+                self.stats.accepted_move_history.push(self.accepted_moves());
                 self.stats.accept_ratio_history.push(ratio);
                 self.stats.dvar_history.push(self.dvar);
-
-                println!("---------------------------------------------");
-                println!("Progress ({:.2}%): {i}/{step_count}", i as f64 / step_count as f64 * 100.0);
-                println!("Acceptance ratio: {:.2}%", ratio);
+                
+                if instant.elapsed().as_millis() >= 1000 {
+                    println!("---------------------------------------------");
+                    println!("Progress ({:.2}%): {i}/{step_count}", i as f64 / step_count as f64 * 100.0);
+                    println!("Acceptance ratio: {:.2}%", ratio);
+                    instant = Instant::now();
+                }
             }
 
             // Update field variation
@@ -210,6 +230,36 @@ impl Sim {
                 self.update_dvar();
             }
         }
+    }
+
+    /// Computes the 2-point correlation function
+    pub fn correlator2(&self) -> Vec<f64> {
+        let [st, sx, sy, sz] = self.lattice.sizes();
+        
+        let spatial_sums: Vec<f64> = (0..st).map(|t| {
+            let mut sum = 0.0;
+            for x in 0..sx {
+                for y in 0..sy {
+                    for z in 0..sz {
+                        sum += self.lattice[[t, x, y, z]];
+                    }
+                }
+            }
+
+            sum / (sx * sy * sz) as f64
+        }).collect();
+
+        let mut corr2 = Vec::with_capacity(st);
+        for dt in 0..st {
+            let mut c = 0.0;
+            for t in 0..st {
+                let t_next = (t + dt) % st;
+                c += spatial_sums[t] * spatial_sums[t_next]
+            }
+            corr2.push(c / st as f64);
+        }
+
+        corr2
     }
 
     fn timestep(&mut self) {
