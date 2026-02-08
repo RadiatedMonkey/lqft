@@ -15,11 +15,11 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
     root.fill(&WHITE)?;
 
     let mut chart = ChartBuilder::on(&root)
-        .caption(format!("Lattice simulation (avg: {})", lattice.mean()), ("sans-serif", 80))
+        .caption("Lattice", ("sans-serif", 80))
         .margin(5)
         .top_x_label_area_size(40)
         .y_label_area_size(40)
-        .build_cartesian_2d(0usize..25, 0usize..25)?;
+        .build_cartesian_2d(0..lattice.sizes()[2], 0..lattice.sizes()[3])?;
 
     chart
         .configure_mesh()
@@ -33,10 +33,10 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
         .label_style(("sans-serif", 20))
         .draw()?;
 
+    let grid = (0..lattice.sizes()[3]).flat_map(|y| (0..lattice.sizes()[2]).map(move |x| (x, y)));
     chart.draw_series(
-        (0..25usize.pow(2)).into_iter().map(|i| {
-            let [_, _, y, z] = lattice.from_index(i);
-            let val = lattice[i];
+        grid.map(|(y, z)| {
+            let val = unsafe { *lattice[[0, 0, y, z]].get() };
 
             // Scale val from [-max, max] to [0, 1] for the color mapping
             // Assuming max fluctuation is around 2.0 based on your previous delta
@@ -124,7 +124,7 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
         };
 
         let (ymin, ymax) = if graph.ylim.is_empty() {
-            (find_min(graph.ydata), find_max(graph.ydata))
+            (find_min(graph.ydata) * 1.05, find_max(graph.ydata) * 1.05)
         } else {
             (graph.ylim.start, graph.ylim.end)
         };
@@ -157,16 +157,24 @@ fn main() -> anyhow::Result<()> {
     let mut sim = SimBuilder::new()
         .sizes([50, 20, 20, 20])
         .spacing(1.0)
-        .initial_step_size(10.0)
-        .upper_acceptance(0.4)
-        .lower_acceptance(0.3)
+        .initial_step_size(100.0)
+        .upper_acceptance(0.55)
+        .lower_acceptance(0.45)
         .mass_squared(1.0)
         .stats_interval(100000)
-        .coupling(0.1)
+        .coupling(0.0)
         .initial_value(InitialFieldValue::RandomRange(-0.1..0.1))
+        // .initial_value(InitialFieldValue::Fixed(5.447))
         .build()?;
 
-    sim.simulate_sequential(50);
+    plot_lattice(0, sim.lattice())?;
+
+    sim.simulate_checkerboard(250);
+
+    println!("Printing lattice");
+    plot_lattice(1, sim.lattice())?;
+
+    // sim.simulate_sequential(50);
 
     // plot_lattice(0, sim.lattice())?;
 
@@ -213,7 +221,7 @@ fn main() -> anyhow::Result<()> {
                 caption: "Accepted Moves",
                 xdata: &sweepx,
                 ydata: &accepted_moves,
-                ylim: 0.0..(stats.total_moves as f64),
+                ylim: 0.0..(sim.total_moves() as f64),
                 ..Default::default()
             },
             GraphData {
@@ -339,7 +347,7 @@ fn main() -> anyhow::Result<()> {
     //     &BLUE,
     // ))?;
 
-    plot_lattice(0, sim.lattice())?;
+    // plot_lattice(0, sim.lattice())?;
 
     Ok(())
 }

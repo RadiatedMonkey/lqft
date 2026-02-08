@@ -1,16 +1,56 @@
+use std::cell::UnsafeCell;
 use std::ops::{Index, IndexMut};
 use std::ops::Range;
 use num_traits::Pow;
 use rand::Rng;
 
-pub struct ScalarLattice4D {
-    sites: Vec<f64>,
-    sizes: [usize; 4]
+#[derive(Debug, PartialEq)]
+pub enum ColorLock {
+    Unlocked, Red, Black
 }
+
+pub struct ScalarLattice4D {
+    pub sites: Vec<UnsafeCell<f64>>,
+    sizes: [usize; 4],
+}
+
+unsafe impl Send for ScalarLattice4D {}
+unsafe impl Sync for ScalarLattice4D {}
 
 impl ScalarLattice4D {
     pub fn sweep_size(&self) -> usize {
         self.sizes.iter().product()
+    }
+
+    /// Returns odd and even indices.
+    pub fn generate_indices(&self) -> (Vec<usize>, Vec<usize>) {
+        let [st, sx, sy, sz] = self.sizes;
+        let stotal: usize = self.sizes.iter().sum();
+
+        let mut red = Vec::with_capacity(stotal / 2 + 1);
+        let mut black = Vec::with_capacity(stotal / 2 + 1);
+
+        println!("Generating checkerboard indices...");
+
+        // Generate red indices
+        for t in 0..st {
+            for x in 0..sx {
+                for y in 0..sy {
+                    for z in 0..sz {
+                        let index = self.to_index([t, x, y, z]);
+                        if (t + x + y + z) % 2 == 0 {
+                            red.push(index);
+                        } else {
+                            black.push(index);
+                        }
+                    }
+                }
+            }
+        }
+
+        println!("Checkerboard generated!");
+
+        (red, black)
     }
 
     pub fn sizes(&self) -> [usize; 4] {
@@ -19,20 +59,27 @@ impl ScalarLattice4D {
 
     /// Computes the mean of the lattice
     pub fn mean(&self) -> f64 {
-        let sum: f64 = self.sites.iter().sum();
+        
+
+        let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
         sum / self.sites.len() as f64
     }
     
     /// Computes the variance of the lattice
     pub fn variance(&self) -> f64 {
-        let sum: f64 = self.sites.iter().map(|x| x.pow(2)).sum();
+        
+
+        let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
         sum / self.sites.len() as f64
     }
 
     pub fn filled(sizes: [usize; 4], fill_value: f64) -> Self {
         let [t, x, y, z] = sizes;
-        let mut sites = Vec::new();
-        sites.resize(t * x * y * z, fill_value);
+        let mut sites = Vec::with_capacity(t * x * y * z);
+        
+        for _ in 0..(t * x * y * z) {
+            sites.push(UnsafeCell::new(fill_value));
+        }
 
         Self { sites, sizes }
     }
@@ -41,8 +88,10 @@ impl ScalarLattice4D {
         let [t, x, y, z] = sizes;
         println!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}");
 
-        let mut sites = Vec::new();
-        sites.resize(sizes.iter().product(), 0.0);
+        let mut sites = Vec::with_capacity(t * x * y * z);
+        for _ in 0..(t * x * y * z) {
+            sites.push(UnsafeCell::new(0.0));
+        }
 
         println!("Generated zeroed scalar lattice");
 
@@ -56,17 +105,14 @@ impl ScalarLattice4D {
         let total_size = sizes.iter().product();
         let mut sites = Vec::with_capacity(total_size);
         let mut rng = rand::rng();
+
         for _ in 0..total_size {
-            sites.push(rng.random_range(range.clone()));
+            sites.push(UnsafeCell::new(rng.random_range(range.clone())));
         }
 
         println!("Generated random scalar lattice");
 
         Self { sites, sizes }
-    }
-
-    pub fn into_inner(self) -> Vec<f64> {
-        self.sites
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
@@ -128,7 +174,7 @@ impl ScalarLattice4D {
 }
 
 impl Index<usize> for ScalarLattice4D {
-    type Output = f64;
+    type Output = UnsafeCell<f64>;
 
     fn index(&self, i: usize) -> &Self::Output {
         &self.sites[i]
@@ -136,23 +182,10 @@ impl Index<usize> for ScalarLattice4D {
 }
 
 impl Index<[usize; 4]> for ScalarLattice4D {
-    type Output = f64;
+    type Output = UnsafeCell<f64>;
 
     fn index(&self, pos: [usize; 4]) -> &Self::Output {
         &self.sites[self.to_index(pos)]
-    }
-}
-
-impl IndexMut<usize> for ScalarLattice4D {
-    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
-        &mut self.sites[i]
-    }
-}
-
-impl IndexMut<[usize; 4]> for ScalarLattice4D {
-    fn index_mut(&mut self, pos: [usize; 4]) -> &mut Self::Output {
-        let idx = self.to_index(pos);
-        &mut self.sites[idx]
     }
 }
 
