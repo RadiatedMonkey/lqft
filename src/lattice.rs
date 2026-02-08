@@ -1,13 +1,8 @@
 use std::cell::UnsafeCell;
-use std::ops::{Index, IndexMut};
+use std::ops::Index;
 use std::ops::Range;
 use num_traits::Pow;
 use rand::Rng;
-
-#[derive(Debug, PartialEq)]
-pub enum ColorLock {
-    Unlocked, Red, Black
-}
 
 pub struct ScalarLattice4D {
     pub sites: Vec<UnsafeCell<f64>>,
@@ -59,16 +54,12 @@ impl ScalarLattice4D {
 
     /// Computes the mean of the lattice
     pub fn mean(&self) -> f64 {
-        
-
         let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
         sum / self.sites.len() as f64
     }
     
     /// Computes the variance of the lattice
     pub fn variance(&self) -> f64 {
-        
-
         let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
         sum / self.sites.len() as f64
     }

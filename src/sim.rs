@@ -1,11 +1,9 @@
 use std::sync::atomic::Ordering;
-use std::{cell::UnsafeCell, sync::atomic::AtomicUsize};
+use std::sync::atomic::AtomicUsize;
 use std::ops::Range;
-use std::time::Instant;
 use atomic_float::AtomicF64;
 use num_traits::Pow;
 use rand::Rng;
-use rayon::iter::plumbing::{self, Consumer, Producer, ProducerCallback, UnindexedConsumer, bridge};
 use crate::lattice::ScalarLattice4D;
 
 use rayon::prelude::*;
@@ -20,21 +18,20 @@ pub struct SimBuilder {
     sizes: [usize; 4],
     initial_value: InitialFieldValue,
 
-    starting_variation: f64,
+    initial_step_size: f64,
     lower_acceptance: f64,
     upper_acceptance: f64,
     acceptance_update_interval: usize,
 
     mass_squared: f64,
-    bare_coupling: f64,
-    stats_interval: usize
+    bare_coupling: f64
 }
 
 impl SimBuilder {
     pub fn new() -> Self {
         Self {
-            spacing: 0.05, sizes: [100; 4], initial_value: InitialFieldValue::Fixed(0.0), starting_variation: 0.3, mass_squared: 1.0, bare_coupling: 0.0,
-            lower_acceptance: 0.78, upper_acceptance: 0.82, stats_interval: 100_000, acceptance_update_interval: 1000
+            spacing: 0.05, sizes: [100; 4], initial_value: InitialFieldValue::Fixed(0.0), initial_step_size: 0.3, mass_squared: 1.0, bare_coupling: 0.0,
+            lower_acceptance: 0.78, upper_acceptance: 0.82, acceptance_update_interval: 1000
         }
     }
 
@@ -59,7 +56,7 @@ impl SimBuilder {
     /// The starting value of the maximum field variation. The field variation determines
     /// how much the field fluctuates.
     pub fn initial_step_size(mut self, value: f64) -> Self {
-        self.starting_variation = value;
+        self.initial_step_size = value;
         self
     }
 
@@ -80,13 +77,6 @@ impl SimBuilder {
     /// Sets the amount of steps to wait before checking the field variation again.
     pub fn acceptance_update_interval(mut self, interval: usize) -> Self {
         self.acceptance_update_interval = interval;
-        self
-    }
-
-    /// Decides how often to record statistics. The simulation will record a statistic every
-    /// `interval` steps.
-    pub fn stats_interval(mut self, interval: usize) -> Self {
-        self.stats_interval = interval;
         self
     }
 
@@ -113,10 +103,14 @@ impl SimBuilder {
             }
         };
 
-        let sim = Sim {
-            lattice, spacing: self.spacing, step_size: AtomicF64::new(self.starting_variation), mass_squared: self.mass_squared, coupling: self.bare_coupling,
-            lower_acceptance: self.lower_acceptance, upper_acceptance: self.upper_acceptance, stats: SimStatistics::default(), stats_interval: self.stats_interval, acceptance_interval: self.acceptance_update_interval
+        let mut sim = Sim {
+            lattice, spacing: self.spacing, step_size: AtomicF64::new(self.initial_step_size), mass_squared: self.mass_squared, coupling: self.bare_coupling,
+            lower_acceptance: self.lower_acceptance, upper_acceptance: self.upper_acceptance, stats: SimStatistics::default(), acceptance_interval: self.acceptance_update_interval
         };
+
+        let first_action = sim.compute_full_action();
+        sim.stats.current_action.store(first_action, Ordering::Release);
+        sim.stats.action_history.push(first_action);
 
         Ok(sim)
     }
@@ -128,9 +122,8 @@ impl Default for SimBuilder {
     }
 }
 
+/// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
 pub struct SimStatistics {
-    /// Steps at which statistics were recorded.
-    pub timepoints: Vec<usize>,
     /// Total moves made in the simulation
     pub total_moves: AtomicUsize,
     /// Total moves accepted
@@ -144,31 +137,36 @@ pub struct SimStatistics {
     /// History of the field mean
     pub mean_history: Vec<f64>,
     /// History of the field variance.
-    pub var_history: Vec<f64>
+    pub meansq_history: Vec<f64>,
+    /// History of the action over time.
+    pub action_history: Vec<f64>,
+    /// The action at the current point in time.
+    pub current_action: AtomicF64
 }
 
 impl SimStatistics {
     pub fn reserve_capacity(&mut self, count: usize) {
-        self.timepoints.reserve(count);
         self.accepted_move_history.reserve(count);
         self.accept_ratio_history.reserve(count);
         self.dvar_history.reserve(count);
         self.mean_history.reserve(count);
-        self.var_history.reserve(count);
+        self.meansq_history.reserve(count);
+        self.action_history.reserve(count);
     }
 }
 
 impl Default for SimStatistics {
     fn default() -> Self {
         Self {
-            timepoints: Vec::new(),
+            current_action: AtomicF64::new(0.0),
             total_moves: AtomicUsize::new(0),
             accepted_move_history: Vec::new(),
             accepted_moves: AtomicUsize::new(0),
             accept_ratio_history: Vec::new(),
             dvar_history: Vec::new(),
             mean_history: Vec::new(),
-            var_history: Vec::new()
+            meansq_history: Vec::new(),
+            action_history: Vec::new()
         }
     }
 }
@@ -185,12 +183,10 @@ pub struct Sim {
     lower_acceptance: f64,
     upper_acceptance: f64,
 
-    stats_interval: usize,
     stats: SimStatistics
 }
 
 impl Sim {
-
     pub fn stats(&self) -> &SimStatistics {
         &self.stats
     }
@@ -199,26 +195,61 @@ impl Sim {
         self.step_size.load(Ordering::Relaxed)
     }
 
+    // /// Determines whether thermalisation of the system has finished.
+    // fn has_thermalised(&self) -> bool {
+
+    // }
+
     // Check whether the current field variation is correct, otherwise adjusts it slightly.
     fn update_step_size(&self) {
         let acceptance_ratio = self.accepted_moves() as f64 / self.total_moves() as f64;
         
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.lower_acceptance {
-            // self.step_size *= 0.95;
-            self.step_size.fetch_update(
+            let _ = self.step_size.fetch_update(
                 Ordering::SeqCst,
                 Ordering::SeqCst,
                 |f| Some(f * 0.95) 
             );
         } else if acceptance_ratio > self.upper_acceptance {
-            // self.step_size *= 1.05;
-            self.step_size.fetch_update(
+            let _ = self.step_size.fetch_update(
                 Ordering::SeqCst,
                 Ordering::SeqCst,
                 |f| Some(f * 1.05)
             );
         }
+    }
+
+    /// Computes the absolute action of the entire lattice.
+    fn compute_full_action(&self) -> f64 {
+        let mut action = 0.0;
+        for i in 0..self.lattice.sweep_size() {
+            let a = self.spacing;
+
+            let val = unsafe { *self.lattice[i].get() };
+            let mut der_sum = 0.0;
+
+            for j in 0..4 {
+                // TODO: Create prebuilt adjacency table
+                let orig = self.lattice.from_index(i);
+                let fneigh = self.lattice.get_forward_neighbor(orig, j);
+                let bneigh = self.lattice.get_backward_neighbor(orig, j);
+                
+                // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
+                let fneigh_val = unsafe { *self.lattice[fneigh].get() };
+                let bneigh_val = unsafe { *self.lattice[bneigh].get() };
+
+                der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
+            }
+
+            let kinetic_delta = 0.5 * der_sum;
+            let mass_delta = 0.5 * self.mass_squared * val.pow(2);
+            let interaction_delta = 1.0 / 24.0 * self.coupling * val.pow(4);
+
+            action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
+        }
+
+        action
     }
 
     /// Performs a single iteration and returns the new field value at the given site.
@@ -258,11 +289,39 @@ impl Sim {
 
         self.stats.total_moves.fetch_add(1, Ordering::Relaxed);
         if realised < accept_prob {
+            self.stats.current_action.fetch_add(total_delta, Ordering::AcqRel);
             self.stats.accepted_moves.fetch_add(1, Ordering::Relaxed);
             return new_val;
         }
 
         curr_val
+    }
+
+    fn record_stats(&mut self, current_sweep: usize, total_sweeps: usize) {
+        // Record statistics
+        let mean = self.lattice.mean();
+        let var = self.lattice.variance();
+        let action = self.stats.current_action.load(Ordering::Acquire);
+        
+        self.stats.mean_history.push(mean);
+        self.stats.meansq_history.push(var);
+        self.stats.action_history.push(action);
+
+        let accept = self.accepted_moves();
+        let total = self.total_moves();
+        let ratio = accept as f64 / total as f64 * 100.0;
+        
+        self.stats.accepted_move_history.push(self.accepted_moves());
+        self.stats.accept_ratio_history.push(ratio);
+        self.stats.dvar_history.push(self.step_size());
+        
+        println!("---------------------------------------------");
+        println!("Sweep progress ({:.2}%): {current_sweep}/{total_sweeps}", current_sweep as f64 / total_sweeps as f64 * 100.0);
+        println!("Acceptance ratio: {:.2}%", ratio);
+    }
+
+    fn check_thermalisation(&self) -> bool {
+        todo!()
     }
 
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) {
@@ -272,7 +331,6 @@ impl Sim {
 
         for i in 0..total_sweeps {
             // First update red sites....
-            
             red.par_iter().for_each(|&index| {
                 let new_site = self.checkerboard_site_flip(index);
 
@@ -285,6 +343,7 @@ impl Sim {
                 }
             });
 
+            // then black sites.
             black.par_iter().for_each(|&index| {
                 let new_site = self.checkerboard_site_flip(index);
 
@@ -297,114 +356,12 @@ impl Sim {
                 }
             });
 
-            // Record statistics
-            let mean = self.lattice.mean();
-            let var = self.lattice.variance();
-            
-            self.stats.timepoints.push(i);
-            self.stats.mean_history.push(mean);
-            self.stats.var_history.push(var);
-
-            let accept = self.accepted_moves();
-            let total = self.total_moves();
-            let ratio = accept as f64 / total as f64 * 100.0;
-            
-            self.stats.accepted_move_history.push(self.accepted_moves());
-            self.stats.accept_ratio_history.push(ratio);
-            self.stats.dvar_history.push(self.step_size());
-            
-            // if instant.elapsed().as_millis() >= 1000 {
-                println!("---------------------------------------------");
-                println!("Sweep progress ({:.2}%): {i}/{total_sweeps}", i as f64 / total_sweeps as f64 * 100.0);
-                println!("Acceptance ratio: {:.2}%", ratio);
-                // instant = Instant::now();
-            // }         
+            self.record_stats(i, total_sweeps);     
+            // let thermalised = self.check_thermalisation();
         }   
 
         println!("Checkerboard simulation completed");
     }
-
-    pub fn simulate_sequential(&mut self, total_sweeps: usize) {
-        todo!()
-        // let sweep = self.lattice.sweep_size();
-        // let step_count = total_sweeps * sweep;
-
-        // let stats_count = step_count / self.stats_interval;
-        // self.stats.reserve_capacity(stats_count);
-
-        // let mut instant = Instant::now();
-        // for i in 0..step_count {
-        //     self.timestep();
-
-        //     // Record statistics
-        //     if i % self.stats_interval == 0 {
-        //         let mean = self.lattice.mean();
-        //         let var = self.lattice.variance();
-                
-        //         self.stats.timepoints.push(i);
-        //         self.stats.mean_history.push(mean);
-        //         self.stats.var_history.push(var);
-
-        //         let accept = self.accepted_moves();
-        //         let total = self.total_moves();
-        //         let ratio = accept as f64 / total as f64 * 100.0;
-                
-        //         self.stats.accepted_move_history.push(self.accepted_moves());
-        //         self.stats.accept_ratio_history.push(ratio);
-        //         self.stats.dvar_history.push(self.dvar);
-                
-        //         if instant.elapsed().as_millis() >= 1000 {
-        //             println!("---------------------------------------------");
-        //             println!("Progress ({:.2}%): {i}/{step_count}", i as f64 / step_count as f64 * 100.0);
-        //             println!("Acceptance ratio: {:.2}%", ratio);
-        //             instant = Instant::now();
-        //         }
-        //     }
-
-        //     // Update field variation
-        //     if i % self.acceptance_interval == 0 {
-        //         self.update_dvar();
-        //     }
-        // }
-    }
-
-    /// Computes the 2-point correlation function
-    pub fn correlator2(&self) -> Vec<f64> {
-        let [st, sx, sy, sz] = self.lattice.sizes();
-        
-        let spatial_sums: Vec<f64> = (0..st).map(|t| {
-            let mut sum = 0.0;
-            for x in 0..sx {
-                for y in 0..sy {
-                    for z in 0..sz {
-                        sum += unsafe { *self.lattice[[t, x, y, z]].get() };
-                    }
-                }
-            }
-
-            sum / (sx * sy * sz) as f64
-        }).collect();
-
-        let mut corr2 = Vec::with_capacity(st);
-        for dt in 0..st {
-            let mut c = 0.0;
-            for t in 0..st {
-                let t_next = (t + dt) % st;
-                c += spatial_sums[t] * spatial_sums[t_next]
-            }
-            corr2.push(c / st as f64);
-        }
-
-        corr2
-        // todo!()
-    }
-
-    // fn timestep(&mut self) {
-    //     // Choose a random lattice site.
-    //     let mut rng = rand::rng();
-    //     let chosen_site = rng.random_range(0..self.lattice.sweep_size());
-    //     self.perform_site_flip(chosen_site);
-    // }
 
     pub fn total_moves(&self) -> usize { self.stats.total_moves.load(Ordering::Relaxed) }
     pub fn accepted_moves(&self) -> usize { self.stats.accepted_moves.load(Ordering::Relaxed) }
@@ -412,54 +369,4 @@ impl Sim {
     pub fn lattice(&self) -> &ScalarLattice4D {
         &self.lattice
     }
-
-    // // Computes the action of the current configuration
-    // fn perform_site_flip(&mut self, site: usize) {
-    //     let mut rng = rand::rng();
-    //     let a = self.spacing;
-
-    //     let curr_val = self.lattice[site];
-    //     let new_val = rng.random_range((curr_val - self.dvar)..(curr_val + self.dvar));
-
-    //     let mut curr_der_sum = 0.0;
-    //     let mut new_der_sum = 0.0;
-
-    //     for i in 0..4 {
-    //         // TODO: Create prebuilt adjacency table
-    //         let orig = self.lattice.from_index(site);
-    //         let fneigh = self.lattice.get_forward_neighbor(orig, i);
-    //         let bneigh = self.lattice.get_backward_neighbor(orig, i);
-
-    //         let fneigh_val = self.lattice[fneigh];
-    //         let bneigh_val = self.lattice[bneigh];
-
-    //         curr_der_sum += ((fneigh_val - curr_val) / a).pow(2) + ((curr_val - bneigh_val) / a).pow(2);
-    //         new_der_sum += ((fneigh_val - new_val) / a).pow(2) + ((new_val - bneigh_val) / a).pow(2);
-    //     }
-
-    //     let kinetic_delta = 0.5 * (new_der_sum - curr_der_sum);
-    //     let mass_delta = 0.5 * self.mass_squared * (new_val.pow(2) - curr_val.pow(2));
-    //     let interaction_delta = 1.0 / 24.0 * self.coupling * (new_val.pow(4) - curr_val.pow(4));
-
-    //     let total_delta: f64 = a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
-    //     let accept_prob = (-total_delta).exp();
-    //     let realised = rng.random_range(0.0..1.0);
-    //     if realised < accept_prob {
-    //         self.stats.accepted_moves += 1;
-    //         self.lattice[site] = new_val;
-    //     }
-    //     self.stats.total_moves += 1;
-    // }
-
-    // // Check whether the current field variation is correct, otherwise adjusts it slightly.
-    // fn update_dvar(&mut self) {
-    //     let acceptance_ratio = self.stats.accepted_moves as f64 / self.stats.total_moves as f64;
-
-    //     // Adjust dvar if acceptance ratio is 5% away from desired ratio
-    //     if acceptance_ratio < self.lower_acceptance {
-    //         self.dvar *= 0.95;
-    //     } else if acceptance_ratio > self.upper_acceptance {
-    //         self.dvar *= 1.05;
-    //     }
-    // }
 }

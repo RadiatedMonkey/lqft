@@ -3,7 +3,6 @@ mod sim;
 mod vis;
 
 use std::ops::Range;
-use std::time::Instant;
 use plotters::prelude::*;
 use crate::lattice::ScalarLattice4D;
 use crate::sim::{InitialFieldValue, SimBuilder};
@@ -105,7 +104,7 @@ fn find_max(data: &[f64]) -> f64 {
 fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
     let filename = format!("plots/{}", desc.file);
 
-    let root = BitMapBackend::new(&filename, (2000, 3000)).into_drawing_area();
+    let root = BitMapBackend::new(&filename, (3000, 3000)).into_drawing_area();
     root.fill(&WHITE)?;
     
     let areas = root.split_evenly(desc.layout);
@@ -124,7 +123,7 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
         };
 
         let (ymin, ymax) = if graph.ylim.is_empty() {
-            (find_min(graph.ydata) * 1.05, find_max(graph.ydata) * 1.05)
+            (find_min(graph.ydata), find_max(graph.ydata))
         } else {
             (graph.ylim.start, graph.ylim.end)
         };
@@ -155,41 +154,41 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     let mut sim = SimBuilder::new()
-        .sizes([50, 20, 20, 20])
+        .sizes([40, 15, 15, 15])
         .spacing(1.0)
-        .initial_step_size(100.0)
-        .upper_acceptance(0.55)
-        .lower_acceptance(0.45)
-        .mass_squared(1.0)
-        .stats_interval(100000)
+        .initial_step_size(0.75)
+        .upper_acceptance(0.5)
+        .lower_acceptance(0.3)
+        .mass_squared(0.5)
         .coupling(0.0)
         .initial_value(InitialFieldValue::RandomRange(-0.1..0.1))
-        // .initial_value(InitialFieldValue::Fixed(5.447))
         .build()?;
 
     plot_lattice(0, sim.lattice())?;
 
-    sim.simulate_checkerboard(250);
+    let total_sweeps = 500;
+    sim.simulate_checkerboard(total_sweeps);
 
     println!("Printing lattice");
     plot_lattice(1, sim.lattice())?;
 
-    // sim.simulate_sequential(50);
-
-    // plot_lattice(0, sim.lattice())?;
-
     let stats = sim.stats();
-    let sweep_size = sim.lattice().sweep_size();
 
     let accepted_moves = stats.accepted_move_history.iter().map(|v| *v as f64).collect::<Vec<_>>();
-    let sweepx = stats.timepoints.iter().map(|t| (*t as f64) / (sweep_size as f64)).collect::<Vec<_>>();
+    let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
 
-    let tdata = (0..sim.lattice().sizes()[0]).map(|v| v as f64).collect::<Vec<_>>();
-    let corr2 = sim.correlator2();
+    let variance = stats.mean_history
+        .iter()
+        .zip(stats.meansq_history.iter())
+        .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
+        .collect::<Vec<_>>();
+
+    // let tdata = (0..sim.lattice().sizes()[0]).map(|v| v as f64).collect::<Vec<_>>();
+    // let corr2 = sim.correlator2();
 
     let desc = GraphDesc {
         file: "layout.png",
-        layout: (3, 2),
+        layout: (3, 3),
         graphs: &[
             GraphData {
                 caption: "Field Mean",
@@ -198,9 +197,21 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             GraphData {
+                caption: "Field Variance",
+                xdata: &sweepx,
+                ydata: &variance,
+                ..Default::default()
+            },
+            GraphData {
                 caption: "Field Mean Squared",
                 xdata: &sweepx,
-                ydata: &stats.var_history,
+                ydata: &stats.meansq_history,
+                ..Default::default()
+            },
+            GraphData {
+                caption: "Action",
+                xdata: &sweepx,
+                ydata: &stats.action_history,
                 ..Default::default()
             },
             GraphData {
@@ -224,130 +235,15 @@ fn main() -> anyhow::Result<()> {
                 ylim: 0.0..(sim.total_moves() as f64),
                 ..Default::default()
             },
-            GraphData {
-                caption: "2-point Function",
-                xdata: &tdata,
-                ydata: &corr2,
-                ..Default::default()
-            }
+            // GraphData {
+            //     caption: "2-point Function",
+            //     xdata: &tdata,
+            //     ydata: &corr2,
+            //     ..Default::default()
+            // }
         ]
     };
     plot_function(desc)?;
-
-    // let root = BitMapBackend::new("plots/avg.png", (1024, 768)).into_drawing_area();
-
-    // root.fill(&WHITE)?;
-
-    // let means = &sim.stats().mean_history;
-    // let mut chart = ChartBuilder::on(&root)
-    //     .margin(10)
-    //     .caption(
-    //         "Mean field value over time",
-    //         ("sans-serif", 40),
-    //     )
-    //     .set_label_area_size(LabelAreaPosition::Left, 60)
-    //     .set_label_area_size(LabelAreaPosition::Right, 60)
-    //     .set_label_area_size(LabelAreaPosition::Bottom, 40)
-    //     .build_cartesian_2d(
-    //         0..means.len(),
-    //         means.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
-    //             .unwrap_or(0.0)..means.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
-    //             .unwrap_or(0.0)
-    //     )?;
-
-    // chart
-    //     .configure_mesh()
-    //     .disable_x_mesh()
-    //     .disable_y_mesh()
-    //     .x_labels(30)
-    //     .max_light_lines(4)
-    //     .y_desc("Mean field value")
-    //     .draw()?;
-
-    // println!("avg len: {}", means.len());
-
-    // chart.draw_series(LineSeries::new(
-    //     means.iter().enumerate().map(|(i, v)| (i, *v)),
-    //     &BLUE,
-    // ))?;
-
-    // root.present()?;
-    // println!("Average plotted over time");
-
-    // let root = BitMapBackend::new("plots/var.png", (1024, 768)).into_drawing_area();
-
-    // root.fill(&WHITE)?;
-
-    // let vars = &sim.stats().var_history;
-    // let mut chart = ChartBuilder::on(&root)
-    //     .margin(10)
-    //     .caption(
-    //         "Field value variance over time",
-    //         ("sans-serif", 40),
-    //     )
-    //     .set_label_area_size(LabelAreaPosition::Left, 60)
-    //     .set_label_area_size(LabelAreaPosition::Right, 60)
-    //     .set_label_area_size(LabelAreaPosition::Bottom, 40)
-    //     .build_cartesian_2d(
-    //         0..vars.len(),
-    //         vars.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
-    //             .unwrap_or(0.0)..vars.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
-    //             .unwrap_or(0.0)
-    //     )?;
-
-    // chart
-    //     .configure_mesh()
-    //     .disable_x_mesh()
-    //     .disable_y_mesh()
-    //     .x_labels(30)
-    //     .max_light_lines(4)
-    //     .y_desc("Variance")
-    //     .draw()?;
-
-    // chart.draw_series(LineSeries::new(
-    //     vars.iter().enumerate().map(|(i, v)| (i, *v)),
-    //     &BLUE,
-    // ))?;
-
-    // root.present()?;
-    // println!("Variance plotted over time");
-
-    // let root = BitMapBackend::new("plots/accept.png", (1024, 768)).into_drawing_area();
-
-    // root.fill(&WHITE)?;
-
-    // let accept_history = &sim.stats().accept_ratio_history;
-    // let mut chart = ChartBuilder::on(&root)
-    //     .margin(10)
-    //     .caption(
-    //         "Acceptance ratio over time",
-    //         ("sans-serif", 40),
-    //     )
-    //     .set_label_area_size(LabelAreaPosition::Left, 60)
-    //     .set_label_area_size(LabelAreaPosition::Right, 60)
-    //     .set_label_area_size(LabelAreaPosition::Bottom, 40)
-    //     .build_cartesian_2d(
-    //         0..accept_history.len(),
-    //         accept_history.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
-    //             .unwrap_or(0.0)..accept_history.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
-    //             .unwrap_or(0.0)
-    //     )?;
-
-    // chart
-    //     .configure_mesh()
-    //     .disable_x_mesh()
-    //     .disable_y_mesh()
-    //     .x_labels(30)
-    //     .max_light_lines(4)
-    //     .y_desc("Acceptance ratio")
-    //     .draw()?;
-
-    // chart.draw_series(LineSeries::new(
-    //     accept_history.iter().enumerate().map(|(i, v)| (i, *v)),
-    //     &BLUE,
-    // ))?;
-
-    // plot_lattice(0, sim.lattice())?;
 
     Ok(())
 }
