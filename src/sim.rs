@@ -22,6 +22,8 @@ pub struct SimBuilder {
     lower_acceptance: f64,
     upper_acceptance: f64,
     acceptance_update_interval: usize,
+    thermalisation_threshold: f64,
+    thermalisation_block_size: usize,
 
     mass_squared: f64,
     bare_coupling: f64,
@@ -38,6 +40,8 @@ impl SimBuilder {
             bare_coupling: 0.0,
             lower_acceptance: 0.78,
             upper_acceptance: 0.82,
+            thermalisation_threshold: 0.01,
+            thermalisation_block_size: 100,
             acceptance_update_interval: 1000,
         }
     }
@@ -99,6 +103,16 @@ impl SimBuilder {
         self
     }
 
+    pub fn thermalisation_threshold(mut self, value: f64) -> Self {
+        self.thermalisation_threshold = value;
+        self
+    }
+
+    pub fn thermalisation_block_size(mut self, value: usize) -> Self {
+        self.thermalisation_block_size = value;
+        self
+    }
+
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<Sim> {
         let lattice = match self.initial_value {
@@ -116,6 +130,8 @@ impl SimBuilder {
             upper_acceptance: self.upper_acceptance,
             stats: SimStatistics::default(),
             acceptance_interval: self.acceptance_update_interval,
+            thermalisation_block_size: self.thermalisation_block_size,
+            thermalisation_threshold: self.thermalisation_threshold
         };
 
         let first_action = sim.compute_full_action();
@@ -154,6 +170,7 @@ pub struct SimStatistics {
     pub action_history: Vec<f64>,
     /// The action at the current point in time.
     pub current_action: AtomicF64,
+    pub thermalisation_ratio_history: Vec<f64>
 }
 
 impl SimStatistics {
@@ -164,6 +181,7 @@ impl SimStatistics {
         self.mean_history.reserve(count);
         self.meansq_history.reserve(count);
         self.action_history.reserve(count);
+        self.thermalisation_ratio_history.reserve(count);
     }
 }
 
@@ -179,6 +197,7 @@ impl Default for SimStatistics {
             mean_history: Vec::new(),
             meansq_history: Vec::new(),
             action_history: Vec::new(),
+            thermalisation_ratio_history: Vec::new()
         }
     }
 }
@@ -195,6 +214,9 @@ pub struct Sim {
     lower_acceptance: f64,
     upper_acceptance: f64,
 
+    thermalisation_threshold: f64,
+    thermalisation_block_size: usize,
+
     stats: SimStatistics,
 }
 
@@ -203,16 +225,42 @@ impl Sim {
         &self.stats
     }
 
+    pub fn thermalisation_threshold(&self) -> f64 {
+        self.thermalisation_threshold
+    }
+
+    pub fn thermalisation_block_size(&self) -> usize {
+        self.thermalisation_block_size
+    }
+
     pub fn step_size(&self) -> f64 {
         self.step_size.load(Ordering::Relaxed)
     }
 
-    // /// Determines whether thermalisation of the system has finished.
-    // fn has_thermalised(&self) -> bool {
+    /// Determines whether thermalisation of the system has finished.
+    /// 
+    /// Returns the current ratio and a bool indicating whether the system has reached the
+    /// thermalisation threshold.
+    fn thermalisation_check(&self) -> (f64, bool) {
+        let bsize = self.thermalisation_block_size;
 
-    // }
+        let action_history = &self.stats.action_history;
+        let ah_len = action_history.len();
+        if ah_len < 2 * bsize {
+            return (0.0, false)
+        }
 
-    // Check whether the current field variation is correct, otherwise adjusts it slightly.
+        let last50 = &action_history[(ah_len - bsize)..];
+        let l50_avg = last50.iter().copied().sum::<f64>().abs() / bsize as f64;
+
+        let prev50 = &action_history[(ah_len - 2 * bsize)..(ah_len - bsize)];
+        let p50_avg: f64 = prev50.iter().copied().sum::<f64>().abs() / bsize as f64;
+
+        let ratio = (l50_avg - p50_avg).abs() / l50_avg;
+        (ratio, ratio < self.thermalisation_threshold)
+    }
+
+    /// Check whether the current field variation is correct, otherwise adjusts it slightly.
     fn update_step_size(&self) {
         let acceptance_ratio = self.accepted_moves() as f64 / self.total_moves() as f64;
 
@@ -335,10 +383,6 @@ impl Sim {
         println!("Acceptance ratio: {:.2}%", ratio);
     }
 
-    fn check_thermalisation(&self) -> bool {
-        todo!()
-    }
-
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) {
         let (red, black) = self.lattice.generate_indices();
 
@@ -371,7 +415,16 @@ impl Sim {
                 }
             });
 
+            let (th_ratio, thermalised) = self.thermalisation_check();
+            self.stats.thermalisation_ratio_history.push(th_ratio);
+
             self.record_stats(i, total_sweeps);
+
+            if thermalised {
+                println!("The system has thermalised with ratio {:.2}!", th_ratio);
+                break
+            }
+
             // let thermalised = self.check_thermalisation();
         }
 
@@ -381,6 +434,7 @@ impl Sim {
     pub fn total_moves(&self) -> usize {
         self.stats.total_moves.load(Ordering::Relaxed)
     }
+
     pub fn accepted_moves(&self) -> usize {
         self.stats.accepted_moves.load(Ordering::Relaxed)
     }

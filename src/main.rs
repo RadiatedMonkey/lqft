@@ -163,6 +163,8 @@ fn main() -> anyhow::Result<()> {
         .mass_squared(0.5)
         .coupling(0.0)
         .initial_value(InitialFieldValue::RandomRange(-0.1..0.1))
+        .thermalisation_block_size(100)
+        .thermalisation_threshold(0.01)
         .build()?;
 
     plot_lattice(0, sim.lattice())?;
@@ -212,6 +214,12 @@ fn main() -> anyhow::Result<()> {
                 caption: "Field Mean Squared",
                 xdata: &sweepx,
                 ydata: &stats.meansq_history,
+                ..Default::default()
+            },
+            GraphData {
+                caption: &format!("Action block average ratio (size {})", sim.thermalisation_block_size()),
+                xdata: &sweepx,
+                ydata: &stats.thermalisation_ratio_history,
                 ..Default::default()
             },
             GraphData {
