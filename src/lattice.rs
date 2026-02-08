@@ -1,72 +1,133 @@
-use std::ops::Index;
+use std::ops::{Index, IndexMut};
+use std::ops::Range;
+use num_traits::Pow;
 use rand::Rng;
 
-pub struct Lattice4D<const N: usize> {
-    sites: Vec<f64>
+pub struct ScalarLattice4D {
+    sites: Vec<f64>,
+    sizes: [usize; 4]
 }
 
-impl<const N: usize> Lattice4D<N> {
-    const SIZE: usize = N.pow(4);
-
-    pub const fn size(&self) -> usize {
-        Self::SIZE
+impl ScalarLattice4D {
+    pub fn sweep_size(&self) -> usize {
+        self.sizes.iter().product()
     }
 
-    pub fn zeroed() -> Self {
+    pub fn sizes(&self) -> [usize; 4] {
+        self.sizes
+    }
+
+    /// Computes the mean of the lattice
+    pub fn mean(&self) -> f64 {
+        let sum: f64 = self.sites.iter().sum();
+        sum / self.sites.len() as f64
+    }
+    
+    /// Computes the variance of the lattice
+    pub fn variance(&self) -> f64 {
+        let sum: f64 = self.sites.iter().map(|x| x.pow(2)).sum();
+        sum / self.sites.len() as f64
+    }
+
+    pub fn filled(sizes: [usize; 4], fill_value: f64) -> Self {
+        let [t, x, y, z] = sizes;
         let mut sites = Vec::new();
-        sites.resize(Self::SIZE, 0.0);
+        sites.resize(t * x * y * z, fill_value);
 
-        Self { sites }
+        Self { sites, sizes }
     }
 
-    pub fn random() -> Self {
-        println!("Generating random 4D lattice of size {N}^4");
+    pub fn zeroed(sizes: [usize; 4]) -> Self {
+        let [t, x, y, z] = sizes;
+        println!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}");
 
-        let mut sites = Vec::with_capacity(Self::SIZE);
+        let mut sites = Vec::new();
+        sites.resize(sizes.iter().product(), 0.0);
+
+        println!("Generated zeroed scalar lattice");
+
+        Self { sites, sizes }
+    }
+
+    pub fn random(sizes: [usize; 4], range: Range<f64>) -> Self {
+        let [t, x, y, z] = sizes;
+        println!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}");
+
+        let total_size = sizes.iter().product();
+        let mut sites = Vec::with_capacity(total_size);
         let mut rng = rand::rng();
-        for _ in 0..Self::SIZE {
-            sites.push(rng.random_range(-20.0..20.0));
+        for _ in 0..total_size {
+            sites.push(rng.random_range(range.clone()));
         }
 
-        println!("Generated random lattice");
+        println!("Generated random scalar lattice");
 
-        Self { sites }
-    }
-
-    fn impose_wrapping([t, x, y, z]: [usize; 4]) {
-
+        Self { sites, sizes }
     }
 
     pub fn into_inner(self) -> Vec<f64> {
         self.sites
     }
 
+    /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
+    pub fn get_forward_neighbor(&self, orig: [usize; 4], dir: usize) -> [usize; 4] {
+        let mut dir_vec = [0; 4];
+        dir_vec[dir] = 1;
+
+        self.get_relative(orig, dir_vec)
+    }
+
+    /// Gets the neighbor in the given backward direction. This implements wrapping of the boundaries.
+    pub fn get_backward_neighbor(&self, orig: [usize; 4], dir: usize) -> [usize; 4] {
+        let mut dir_vec = [0; 4];
+        dir_vec[dir] = -1;
+
+        self.get_relative(orig, dir_vec)
+    }
+
+    /// Gets the coordinates of a site relative to the current one in the given direction. This is necessary to introduce
+    /// wrapping at the boundaries of the lattice.
+    pub fn get_relative(&self, orig: [usize; 4], dir: [isize; 4]) -> [usize; 4] {
+        let mut neighbor = [0; 4];
+        for i in 0..4 {
+            let ni = (orig[i] as isize + dir[i]).rem_euclid(self.sizes[i] as isize) as usize;
+            neighbor[i] = ni;
+        }
+
+        neighbor
+    }
+
     /// Converts a lattice coordinate to an index.
     /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
-    pub const fn to_index([t, x, y, z]: [usize; 4]) -> usize {
-        t * N.pow(3) + x * N.pow(2) + y * N + z
+    pub fn to_index(&self, [t, x, y, z]: [usize; 4]) -> usize {
+        let [st, sx, sy, sz] = self.sizes;
+
+        debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
+        debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
+        debug_assert!(y < sy, "y coordinate out of range: {t} > {sy}");
+        debug_assert!(z < sz, "z coordinate out of range: {t} > {sz}");
+
+        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
     }
 
     /// Converts a lattice index to a coordinate
-    pub const fn from_index(i: usize) -> [usize; 4] {
-        let z = i % N;
+    pub fn from_index(&self, i: usize) -> [usize; 4] {
+        let [_, sx, sy, sz] = self.sizes;
+        let z = i % sz;
 
-        let rem = i - z;
-        let yN = rem % N.pow(2);
-        let y = yN / N;
+        let rem = (i - z) / sz;
+        let y = rem % sy;
 
-        let rem = rem - yN;
-        let xN2 = rem % N.pow(3);
-        let x = xN2 / N.pow(2);
+        let rem = (rem - y) / sy;
+        let x = rem % sx;
 
-        let rem = rem - xN2;
-        let t = rem / N.pow(3);
+        let t = (rem - x) / sx;
 
         [t, x, y, z]
     }
 }
 
-impl<const N: usize> Index<usize> for Lattice4D<N> {
+impl Index<usize> for ScalarLattice4D {
     type Output = f64;
 
     fn index(&self, i: usize) -> &Self::Output {
@@ -74,51 +135,70 @@ impl<const N: usize> Index<usize> for Lattice4D<N> {
     }
 }
 
-impl<const N: usize> Index<[usize; 4]> for Lattice4D<N> {
+impl Index<[usize; 4]> for ScalarLattice4D {
     type Output = f64;
 
     fn index(&self, pos: [usize; 4]) -> &Self::Output {
-        &self.sites[Self::to_index(pos)]
+        &self.sites[self.to_index(pos)]
     }
 }
 
-// use std::ops::{AddAssign, Div, Index, IndexMut};
-// use num_traits::{ConstZero, Zero};
-//
-// /// Floating point type to use. Should be either f32 or f64.
-// type Prec = f64;
-//
-// pub struct SiteLattice<const N: usize, const M: usize> {
-//     data: [[Prec; N]; M]
-// }
-//
-// impl<const N: usize, const M: usize> SiteLattice<N, M> {
-//     pub const fn zeroed() -> Self {
-//         Self { data: [[0.0; N]; M] }
-//     }
-//
-//     /// Returns the total amount of lattice sites.
-//     pub const fn size() -> usize {
-//         N * M
-//     }
-// }
-//
-// impl<const N: usize, const M: usize> Index<(usize, usize)> for SiteLattice<N, M> {
-//     type Output = Prec;
-//
-//     fn index(&self, index: (usize, usize)) -> &Self::Output {
-//         &self.data[index.0][index.1]
-//     }
-// }
-//
-// impl<const N: usize, const M: usize> IndexMut<(usize, usize)> for SiteLattice<N, M> {
-//     fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
-//         &mut self.data[index.0][index.1]
-//     }
-// }
-//
-// impl<const N: usize, const M: usize> From<[[Prec; N]; M]> for SiteLattice<N, M> {
-//     fn from(data: [[Prec; N]; M]) -> Self {
-//         Self { data }
-//     }
-// }
+impl IndexMut<usize> for ScalarLattice4D {
+    fn index_mut(&mut self, i: usize) -> &mut Self::Output {
+        &mut self.sites[i]
+    }
+}
+
+impl IndexMut<[usize; 4]> for ScalarLattice4D {
+    fn index_mut(&mut self, pos: [usize; 4]) -> &mut Self::Output {
+        let idx = self.to_index(pos);
+        &mut self.sites[idx]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test whether coordinates are mapped to indices into the vector storage correctly.
+    #[test]
+    fn lattice_index_map_test() {
+        let sizes = [5, 7, 13, 22];
+        let lattice = ScalarLattice4D::zeroed(sizes);
+
+        for i in 0..sizes.iter().product() {
+            let coords = lattice.from_index(i);
+            let idx = lattice.to_index(coords);
+
+            println!("{coords:?}");
+            assert_eq!(i, idx, "Conversion between indices and coordinates is incorrect!");
+        }
+    }
+
+    /// Test whether exceeding boundaries correctly wraps back to the other side of the lattice.
+    #[test]
+    fn lattice_boundary_wrap_test() {
+        let sizes = [5, 7, 13, 22];
+        let lattice = ScalarLattice4D::zeroed(sizes);
+
+        for (i, v) in sizes.iter().enumerate() {
+            let mut start = [0; 4];
+            start[i] = *v - 1;
+
+            let mut dir = [0; 4];
+            dir[i] = 1;
+
+            let neighbor = lattice.get_relative(start, dir);
+            println!("{start:?} + {dir:?} = {neighbor:?}");
+            assert_eq!(neighbor, [0; 4]);
+
+            dir[i] = -(start[i] as isize);
+            let neighbor = lattice.get_relative(start, dir);
+
+            println!("{start:?} + {dir:?} = {neighbor:?}");
+            assert_eq!(neighbor, [0; 4]);
+
+            println!("Coordinate {i} is correct");
+        }
+    }
+}
