@@ -64,52 +64,24 @@ fn main() -> anyhow::Result<()> {
     let mut sim = SimBuilder::new()
         .sizes([25; 4])
         .spacing(1.0)
-        .variation(1.0)
+        .initial_variation(1.0)
+        .upper_acceptance(0.6)
+        .lower_acceptance(0.3)
         .mass_squared(1.0)
-        .bare_coupling(0.5)
-        .initial_value(InitialFieldValue::Fixed(0.0))
+        .stats_interval(10000)
+        .coupling(0.5)
+        .initial_value(InitialFieldValue::RandomRange(-0.1..0.1))
         .build()?;
 
-    let sweep = sim.lattice().sweep_size();
+    sim.simulate(25);
 
-    plot_lattice(0, sim.lattice())?;
-    let mut last_update = Instant::now();
-
-    let mut means = Vec::new();
-    let mut vars = Vec::new();
-
-    let total_count = 50 * sweep;
-    for i in 0..total_count {
-        sim.timestep();
-
-        if i % (sweep / 10) == 0 {
-            let mean = sim.lattice().mean();
-            let var = sim.lattice().variance();
-
-            println!("Mean: {mean}, variance: {var}");
-
-            means.push(mean);
-            vars.push(var);
-        }
-
-        if last_update.elapsed().as_millis() >= 1000 {
-            let accept = sim.accepted_moves();
-            let total = sim.total_moves();
-            let ratio = accept as f64 / total as f64 * 100.0;
-            println!("---------------------------------------------");
-            println!("Progress ({:.2}%): {i}/{total_count}", i as f64 / total_count as f64 * 100.0);
-            println!("Acceptance ratio: {:.2}%", ratio);
-            // println!("Mean field value: {}", sim.lattice().avg());
-
-            // plot_lattice(i, sim.lattice())?;
-            last_update = Instant::now();
-        }
-    }
+    // plot_lattice(0, sim.lattice())?;
 
     let root = BitMapBackend::new("plots/avg.png", (1024, 768)).into_drawing_area();
 
     root.fill(&WHITE)?;
 
+    let means = &sim.stats().mean_history;
     let mut chart = ChartBuilder::on(&root)
         .margin(10)
         .caption(
@@ -149,6 +121,7 @@ fn main() -> anyhow::Result<()> {
 
     root.fill(&WHITE)?;
 
+    let vars = &sim.stats().var_history;
     let mut chart = ChartBuilder::on(&root)
         .margin(10)
         .caption(
@@ -176,11 +149,48 @@ fn main() -> anyhow::Result<()> {
 
     chart.draw_series(LineSeries::new(
         vars.iter().enumerate().map(|(i, v)| (i, *v)),
-        &RED,
+        &BLUE,
     ))?;
 
     root.present()?;
     println!("Variance plotted over time");
+
+    let root = BitMapBackend::new("plots/accept.png", (1024, 768)).into_drawing_area();
+
+    root.fill(&WHITE)?;
+
+    let accept_history = &sim.stats().accept_ratio_history;
+    let mut chart = ChartBuilder::on(&root)
+        .margin(10)
+        .caption(
+            "Acceptance ratio over time",
+            ("sans-serif", 40),
+        )
+        .set_label_area_size(LabelAreaPosition::Left, 60)
+        .set_label_area_size(LabelAreaPosition::Right, 60)
+        .set_label_area_size(LabelAreaPosition::Bottom, 40)
+        .build_cartesian_2d(
+            0..accept_history.len(),
+            accept_history.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
+                .unwrap_or(0.0)..accept_history.iter().copied().reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
+                .unwrap_or(0.0)
+        )?;
+
+    chart
+        .configure_mesh()
+        .disable_x_mesh()
+        .disable_y_mesh()
+        .x_labels(30)
+        .max_light_lines(4)
+        .y_desc("Acceptance ratio")
+        .draw()?;
+
+    chart.draw_series(LineSeries::new(
+        accept_history.iter().enumerate().map(|(i, v)| (i, *v)),
+        &BLUE,
+    ))?;
+
+    plot_lattice(0, sim.lattice())?;
 
     Ok(())
 }
