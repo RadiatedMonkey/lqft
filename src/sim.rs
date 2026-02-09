@@ -8,19 +8,44 @@ use std::sync::atomic::Ordering;
 
 use rayon::prelude::*;
 
-pub enum InitialFieldValue {
+/// Makes all struct fields public in the current and specified modules.
+/// This makes it easier to spread implementation details over multiple files.
+macro_rules! all_public_in {
+    ($module:path, $vis:vis struct $name:ident {
+        $(
+            $(#[$meta:meta])*
+            $field_name:ident: $field_type:ty
+        ),* $(,)?
+    }) => {
+        $vis struct $name {
+            $(
+                $(#[$meta])*
+                pub(in $module) $field_name : $field_type
+            ),*
+        }
+    }
+}
+
+/// The method of initialising the lattice.
+pub enum InitialState {
+    /// Sets every lattice site to the same fixed value.
     Fixed(f64),
+    /// Randomises the lattice using values from this range.
     RandomRange(Range<f64>),
 }
 
-pub struct SimBuilder {
+/// Used to configure a lattice simulation.
+pub struct SystemBuilder {
     spacing: f64,
     sizes: [usize; 4],
-    initial_value: InitialFieldValue,
+    initial_state: InitialState,
 
     initial_step_size: f64,
     lower_acceptance: f64,
     upper_acceptance: f64,
+    step_size_increase: f64,
+    step_size_decrease: f64,
+
     acceptance_update_interval: usize,
     thermalisation_threshold: f64,
     thermalisation_block_size: usize,
@@ -29,98 +54,165 @@ pub struct SimBuilder {
     bare_coupling: f64,
 }
 
-impl SimBuilder {
+impl SystemBuilder {
     pub fn new() -> Self {
         Self {
-            spacing: 0.05,
-            sizes: [100; 4],
-            initial_value: InitialFieldValue::Fixed(0.0),
-            initial_step_size: 0.3,
+            spacing: 1.0,
+            sizes: [40, 20, 20, 20],
+            initial_state: InitialState::Fixed(0.0),
+            initial_step_size: 1.0,
             mass_squared: 1.0,
             bare_coupling: 0.0,
-            lower_acceptance: 0.78,
-            upper_acceptance: 0.82,
+            lower_acceptance: 0.3,
+            upper_acceptance: 0.5,
+            step_size_increase: 1.05,
+            step_size_decrease: 0.95,
             thermalisation_threshold: 0.01,
             thermalisation_block_size: 100,
             acceptance_update_interval: 1000
         }
     }
 
+    /// Sets the increase in step size for each correction.
+    /// 
+    /// If the system determines the acceptance ratio to be outside of the desired range,
+    /// it may increase the step size by this ratio.
+    /// 
+    /// Default value: `1.05`
+    pub fn step_size_increase(mut self, value: f64) -> Self {
+        self.step_size_increase = value;
+        self
+    }
+
+    /// Sets the decrease in step size for each correction.
+    /// 
+    /// If the system determines the accceptance ratio to be outside of the desired range,
+    /// it may decrease the step size by this ratio.
+    /// 
+    /// Default value: `0.95`.
+    pub fn step_size_decrease(mut self, value: f64) -> Self {
+        self.step_size_decrease = value;
+        self
+    }
+
     /// Sets the lattice spacing.
+    /// 
+    /// Default value: `1.0`.
     pub fn spacing(mut self, value: f64) -> Self {
         self.spacing = value;
         self
     }
 
     /// Sets the dimensions of the lattice.
+    /// 
+    /// These dimensions are in the format `[t, x, y, z]`.
+    /// 
+    /// Default value: `[40, 20, 20, 20]`
     pub fn sizes(mut self, value: [usize; 4]) -> Self {
         self.sizes = value;
         self
     }
 
-    /// Sets the initial conditions of the lattice.
-    pub fn initial_value(mut self, value: InitialFieldValue) -> Self {
-        self.initial_value = value;
+    /// Sets the initial state of the lattice.
+    /// 
+    /// The initial state can either be set to a constant value (for example `0.0` for a "cold start")
+    /// or a random range for a "hot start".
+    /// 
+    /// Default value: `LatticeInitialization::FixedValue(0.0)`.
+    pub fn initial_value(mut self, value: InitialState) -> Self {
+        self.initial_state = value;
         self
     }
 
-    /// The starting value of the maximum field variation. The field variation determines
-    /// how much the field fluctuates.
+    /// The starting value of the step size.
+    /// 
+    /// This should be set around the optimal step size for the current configuration (if known).
+    /// If the initial step size is suboptimal, the system will automatically adjust it to reach the desired
+    /// acceptance ratio. This may however cause thermalisation to take longer.
+    /// 
+    /// Default value: `1.0`.
     pub fn initial_step_size(mut self, value: f64) -> Self {
         self.initial_step_size = value;
         self
     }
 
     /// Sets the desired lower bound on the acceptance ratio. If the acceptance ratio goes below
-    /// this bound, dvar will be adjusted to correct this.
+    /// this bound, the step size will be adjusted to correct this.
+    ///
+    /// Default value: `0.3`.
+    /// 
+    /// See [`step_size_decrease`](SimBuilder::step_size_decrease) and [`initial_step_size`](SimBuilder::initial_step_size) for more information.
     pub fn lower_acceptance(mut self, ratio: f64) -> Self {
         self.lower_acceptance = ratio;
         self
     }
 
     /// Sets the desired upper bound on the acceptance ratio. If the acceptance ratio goes above
-    /// this bound, dvar will be adjusted to correct this.
+    /// this bound, the step size will be adjusted to correct this.
+    /// 
+    /// Default value: `0.5`.
+    /// 
+    /// See [`step_size_increase`](SimBuilder::step_size_increase) and [`initial_step_size`](SimBuilder::initial_step_size) for more information.
     pub fn upper_acceptance(mut self, ratio: f64) -> Self {
         self.upper_acceptance = ratio;
         self
     }
 
-    /// Sets the amount of steps to wait before checking the field variation again.
-    pub fn acceptance_update_interval(mut self, interval: usize) -> Self {
+    /// Sets the amount of iterations before checking and correcting the step size.
+    /// 
+    /// Rather than correcting the step size every single iteration, the system checks it on a predetermined interval.
+    /// This is to improve performance since most times only a few corrections are needed to steer the system to the right acceptance ratio.
+    /// 
+    /// Default value: `1000`.
+    pub fn step_size_correction_interval(mut self, interval: usize) -> Self {
         self.acceptance_update_interval = interval;
         self
     }
 
     /// Sets the coupling constant.
+    /// 
+    /// This sets the strength of the 4phi coupling. If set to `0.0` the system will resemble a free scalar field.
+    /// 
+    /// Default value: `0.0`.
     pub fn coupling(mut self, value: f64) -> Self {
         self.bare_coupling = value;
         self
     }
 
     /// Sets the mass squared. Setting this to a negative value will introduce symmetry breaking.
+    /// 
+    /// Default value: `1.0`.
     pub fn mass_squared(mut self, value: f64) -> Self {
         self.mass_squared = value;
         self
-    }
+    }   
 
+    /// Sets the thermalisation threshold. See [`th_ratio`](Sim::th_ratio) for more information on how thermalisation
+    /// works.
+    /// 
+    /// Default value: `0.01`.
     pub fn thermalisation_threshold(mut self, value: f64) -> Self {
         self.thermalisation_threshold = value;
         self
     }
 
+    /// Sets the thermalisation block size. See [`th_ratio`](Sim::th_ratio) for more information on how thermalisation
+    /// works.
+    /// 
+    /// Default value: `100`.
     pub fn thermalisation_block_size(mut self, value: usize) -> Self {
         self.thermalisation_block_size = value;
         self
     }
 
     /// Creates the simulation using the given options.
-    pub fn build(self) -> anyhow::Result<Sim> {
-        let lattice = match self.initial_value {
-            InitialFieldValue::Fixed(val) => ScalarLattice4D::filled(self.sizes, val),
-            InitialFieldValue::RandomRange(range) => ScalarLattice4D::random(self.sizes, range),
+    pub fn build(self) -> anyhow::Result<System> {
+        let lattice = match self.initial_state {
+            InitialState::Fixed(val) => ScalarLattice4D::filled(self.sizes, val),
+            InitialState::RandomRange(range) => ScalarLattice4D::random(self.sizes, range),
         };
 
-        let mut sim = Sim {
+        let mut sim = System {
             lattice,
             spacing: self.spacing,
             step_size: AtomicF64::new(self.initial_step_size),
@@ -128,10 +220,10 @@ impl SimBuilder {
             coupling: self.bare_coupling,
             lower_acceptance: self.lower_acceptance,
             upper_acceptance: self.upper_acceptance,
-            stats: SimStatistics::default(),
-            acceptance_interval: self.acceptance_update_interval,
-            thermalisation_block_size: self.thermalisation_block_size,
-            thermalisation_threshold: self.thermalisation_threshold,
+            stats: SystemStats::default(),
+            step_size_correction_interval: self.acceptance_update_interval,
+            th_block_size: self.thermalisation_block_size,
+            th_threshold: self.thermalisation_threshold,
             correlation_slices: Vec::new(),
             measurement_interval: 50
         };
@@ -140,20 +232,21 @@ impl SimBuilder {
         sim.stats
             .current_action
             .store(first_action, Ordering::Release);
+
         sim.stats.action_history.push(first_action);
 
         Ok(sim)
     }
 }
 
-impl Default for SimBuilder {
+impl Default for SystemBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
-pub struct SimStatistics {
+pub struct SystemStats {
     /// Total moves made in the simulation
     pub total_moves: AtomicUsize,
     /// Total moves accepted
@@ -163,7 +256,7 @@ pub struct SimStatistics {
     /// History of accepted move ratio.
     pub accept_ratio_history: Vec<f64>,
     /// History of the step size.
-    pub dvar_history: Vec<f64>,
+    pub step_size_history: Vec<f64>,
     /// History of the field mean
     pub mean_history: Vec<f64>,
     /// History of the field variance.
@@ -176,22 +269,41 @@ pub struct SimStatistics {
     pub thermalisation_ratio_history: Vec<f64>,
     /// The sweep at which the system first passed the thermalisation threshold.
     pub thermalised_at: Option<usize>,
+    /// The amount of measurements performed after thermalisation.
     pub performed_measurements: usize
 }
 
-impl SimStatistics {
+impl SystemStats {    
+    /// Reserves enough space for `count` additional statistics.
+    /// 
+    /// This is called at the start of the simulation with the desired sweep count to improve performance.
     pub fn reserve_capacity(&mut self, count: usize) {
         self.accepted_move_history.reserve(count);
         self.accept_ratio_history.reserve(count);
-        self.dvar_history.reserve(count);
+        self.step_size_history.reserve(count);
         self.mean_history.reserve(count);
         self.meansq_history.reserve(count);
         self.action_history.reserve(count);
         self.thermalisation_ratio_history.reserve(count);
     }
+
+    /// The most recent value of the whole system action.
+    pub fn current_action(&self) -> f64 {
+        self.current_action.load(Ordering::Relaxed)
+    }
+
+    /// The total amount of attempted moves so far.
+    pub fn total_moves(&self) -> usize {
+        self.total_moves.load(Ordering::Relaxed)
+    }
+
+    /// The total amount of accepted moves so far.
+    pub fn accepted_moves(&self) -> usize {
+        self.accepted_moves.load(Ordering::Relaxed)
+    }
 }
 
-impl Default for SimStatistics {
+impl Default for SystemStats {
     fn default() -> Self {
         Self {
             current_action: AtomicF64::new(0.0),
@@ -199,7 +311,7 @@ impl Default for SimStatistics {
             accepted_move_history: Vec::new(),
             accepted_moves: AtomicUsize::new(0),
             accept_ratio_history: Vec::new(),
-            dvar_history: Vec::new(),
+            step_size_history: Vec::new(),
             mean_history: Vec::new(),
             meansq_history: Vec::new(),
             action_history: Vec::new(),
@@ -210,7 +322,7 @@ impl Default for SimStatistics {
     }
 }
 
-pub struct Sim {
+all_public_in!(super, pub struct System {
     lattice: ScalarLattice4D,
     spacing: f64,
     step_size: AtomicF64,
@@ -218,95 +330,105 @@ pub struct Sim {
     mass_squared: f64,
     coupling: f64,
 
-    acceptance_interval: usize,
+    step_size_correction_interval: usize,
     lower_acceptance: f64,
     upper_acceptance: f64,
 
-    thermalisation_threshold: f64,
-    thermalisation_block_size: usize,
+    th_threshold: f64,
+    th_block_size: usize,
 
     /// A vector for every possible C(t)
     /// where the inner vector is for every sweep
     correlation_slices: Vec<f64>,
     measurement_interval: usize,
 
-    stats: SimStatistics,
-}
+    stats: SystemStats,
+});
 
-impl Sim {
-    pub fn stats(&self) -> &SimStatistics {
+impl System {
+    // ==============================================================================
+    // Getters
+    // ==============================================================================
+
+    /// The current statistics of the simulation.
+    pub fn stats(&self) -> &SystemStats {
         &self.stats
     }
 
+    /// The lattice spacing.
     pub fn spacing(&self) -> f64 {
         self.spacing
     }
 
+    /// The lower bound on the acceptance ratio.
     pub fn lower_acceptance(&self) -> f64 {
         self.lower_acceptance
     }
 
+    /// The upper bound on the acceptance ratio.
     pub fn upper_acceptance(&self) -> f64 {
         self.upper_acceptance
     }
 
-    pub fn acceptance_interval(&self) -> usize {
-        self.acceptance_interval
+    pub fn step_size_correction_interval(&self) -> usize {
+        self.step_size_correction_interval
     }
 
-    pub fn thermalisation_threshold(&self) -> f64 {
-        self.thermalisation_threshold
+    /// The current thermalisation ratio threshold.
+    /// 
+    /// See [`SystemBuilder::th_threshold`] for more information.
+    pub fn th_threshold(&self) -> f64 {
+        self.th_threshold
     }
 
-    pub fn thermalisation_block_size(&self) -> usize {
-        self.thermalisation_block_size
+    /// The current thermalisation block size.
+    /// 
+    /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
+    pub fn th_block_size(&self) -> usize {
+        self.th_block_size
     }
 
     pub fn step_size(&self) -> f64 {
         self.step_size.load(Ordering::Relaxed)
     }
 
+    /// Sets the new step size. 
+    /// 
+    /// This function should usually not be called directly. Instead let the system
+    /// configure the step size by itself.
+    pub fn set_step_size(&self, value: f64) {
+        self.step_size.store(value, Ordering::Relaxed);
+    }
+
     pub fn correlator2(&self) -> &[f64] {
         &self.correlation_slices
+    }   
+
+    /// The current mass squared.
+    pub fn mass_squared(&self) -> f64 {
+        self.mass_squared
     }
 
-    /// Determines whether thermalisation of the system has finished.
+    /// The current coupling constant.
+    pub fn coupling(&self) -> f64 {
+        self.coupling
+    }
+
+    /// The internal lattice used for data storage.
+    pub fn lattice(&self) -> &ScalarLattice4D {
+        &self.lattice
+    }
+
+    /// Whether the system has thermalised yet.
     /// 
-    /// Returns the current ratio and a bool indicating whether the system has reached the
-    /// thermalisation threshold.
-    fn thermalisation_check(&self) -> (f64, bool) {
-        let bsize = self.thermalisation_block_size;
-
-        let action_history = &self.stats.action_history;
-        let ah_len = action_history.len();
-        if ah_len < 2 * bsize {
-            return (0.0, false)
-        }
-
-        let last50 = &action_history[(ah_len - bsize)..];
-        let l50_avg = last50.iter().copied().sum::<f64>().abs() / bsize as f64;
-
-        let prev50 = &action_history[(ah_len - 2 * bsize)..(ah_len - bsize)];
-        let p50_avg: f64 = prev50.iter().copied().sum::<f64>().abs() / bsize as f64;
-
-        let ratio = (l50_avg - p50_avg).abs() / l50_avg;
-        (ratio, ratio < self.thermalisation_threshold)
+    /// Once this returns true, the system is ready for measurement.
+    pub fn thermalised(&self) -> bool {
+        self.stats.thermalised_at.is_some()
     }
-
-    /// Check whether the current field variation is correct, otherwise adjusts it slightly.
-    fn update_step_size(&self) {
-        let acceptance_ratio = self.accepted_moves() as f64 / self.total_moves() as f64;
-
-        // Adjust dvar if acceptance ratio is 5% away from desired ratio
-        if acceptance_ratio < self.lower_acceptance {
-            let _ = self
-                .step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 0.95));
-        } else if acceptance_ratio > self.upper_acceptance {
-            let _ = self
-                .step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 1.05));
-        }
+    
+    /// Computes the autocorrelation time of the system in its current state.
+    fn compute_autocorrelation(&self) -> f64 {
+        todo!()
     }
 
     /// Computes the absolute action of the entire lattice.
@@ -342,7 +464,10 @@ impl Sim {
     }
 
     /// Performs a single iteration and returns the new field value at the given site.
-    fn checkerboard_site_flip(&self, site: usize) -> f64 {
+    /// 
+    /// SAFETY: This method should only be called if the calling thread has exclusive access to the given site.
+    /// and the direct neighbours can safely be read from.
+    unsafe fn checkerboard_site_flip(&self, site: usize) -> f64 {
         let mut rng = rand::rng();
         let a = self.spacing;
 
@@ -390,8 +515,8 @@ impl Sim {
         curr_val
     }
 
+    /// Records statistics on the current sweep.
     fn record_stats(&mut self, current_sweep: usize, total_sweeps: usize) {
-        // Record statistics
         let mean = self.lattice.mean();
         let var = self.lattice.variance();
         let action = self.stats.current_action.load(Ordering::Acquire);
@@ -400,15 +525,15 @@ impl Sim {
         self.stats.meansq_history.push(var);
         self.stats.action_history.push(action);
 
-        let accept = self.accepted_moves();
-        let total = self.total_moves();
+        let accept = self.stats.accepted_moves();
+        let total = self.stats.total_moves();
         let ratio = accept as f64 / total as f64 * 100.0;
 
-        self.stats.accepted_move_history.push(self.accepted_moves());
+        self.stats.accepted_move_history.push(accept);
         self.stats.accept_ratio_history.push(ratio);
-        self.stats.dvar_history.push(self.step_size());
+        self.stats.step_size_history.push(self.step_size());
 
-        println!("---------------------------------------------");
+        // TODO: Create proper progress bar.
         println!(
             "Sweep progress ({:.2}%): {current_sweep}/{total_sweeps}",
             current_sweep as f64 / total_sweeps as f64 * 100.0
@@ -418,7 +543,7 @@ impl Sim {
 
     fn get_timeslice(&mut self) -> Vec<f64> {
         // Compute the spatial sum for every time slice
-        let [st, sx, sy, sz] = self.lattice.sizes();
+        let st = self.lattice.t_dim();
 
         let mut sum_t = vec![0.0; st];
         for i in 0..self.lattice.sweep_size() {
@@ -428,76 +553,77 @@ impl Sim {
         }
 
         sum_t
-
-        // let sweep_size = self.lattice.sweep_size();
-        // let st = self.lattice.sizes()[0];
-
-        // for t in 0..self.lattice.sizes()[0] {
-        //     let mut sum = 0.0;
-        //     for i in 0..self.lattice.sweep_size() {
-        //         let pos = self.lattice.from_index(i);
-                
-        //         let tn = (pos[0] + t) % st;
-        //         let curr = unsafe { *self.lattice[i].get() };
-
-        //         let apos = [tn, pos[1], pos[2], pos[3]];
-        //         let advanced: f64 = unsafe { *self.lattice[apos].get() };
-
-        //         sum += (curr * advanced) / (total_sweeps * sweep_size) as f64;
-        //     }
-
-        //     self.correlation_slices[t] += sum;
-        // }
     }
 
+    /// Simulates the system using the checkerboard method.
+    /// 
+    /// The checkerboard method works by dividing the lattice into a "checkerboard" of "red" and "black" sites.
+    /// Since many QFTs interact with direct neighbours only, this allows all sites of a single colour to be updated
+    /// simultaneously rather than sequentially.
+    /// 
+    /// We first divide the lattice into a colours using [`generate_checkerboard`](ScalarLattice4D::generate_checkerboard).
+    /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
+    /// using the Metropolis algorithm. 
+    /// 
+    /// Internal safety:
+    /// To make this work, the lattice makes use of interior mutability. While red is being simulated, all red sites are updated
+    /// by independent threads (i.e. every red site is only accessed by a single thread at once). The black sites are not updated
+    /// and are accessed by multiple threads at a time. The same holds for simulating black sites.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) {
-        self.correlation_slices.resize(self.lattice.sizes()[0], 0.0);
-        let (red, black) = self.lattice.generate_indices();
+        self.stats.reserve_capacity(total_sweeps);
+        self.correlation_slices.resize(self.lattice.dimensions()[0], 0.0);
+        let (red, black) = self.lattice.generate_checkerboard();
 
-        println!("Simulating using checkerboard method...");
-
+        println!("Simulating {total_sweeps} sweeps using checkerboard method...");
+        
         for i in 0..total_sweeps {
             // First update red sites....
             red.par_iter().for_each(|&index| {
-                let new_site = self.checkerboard_site_flip(index);
-
+                // SAFETY: Since this is a red site, this thread has exclusive access to the site.
+                // Therefore it can safely update the value.
                 unsafe {
+                    let new_site = self.checkerboard_site_flip(index);
                     *self.lattice.sites[index].get() = new_site;
-                }
+                };
 
-                if index % self.acceptance_interval == 0 {
-                    self.update_step_size();
+                if index % self.step_size_correction_interval == 0 && !self.thermalised() {
+                    self.correct_step_size();
                 }
             });
 
             // then black sites.
             black.par_iter().for_each(|&index| {
-                let new_site = self.checkerboard_site_flip(index);
-
+                // SAFETY: Since this is a black site, this thread has exclusive access to the site.
+                // Therefore it can safely update the value.
                 unsafe {
+                    let new_site = self.checkerboard_site_flip(index);
                     *self.lattice.sites[index].get() = new_site;
                 }
 
-                if index % self.acceptance_interval == 0 {
-                    self.update_step_size();
+                if index % self.step_size_correction_interval == 0 && !self.thermalised() {
+                    self.correct_step_size();
                 }
             });
 
-            let (th_ratio, thermalised) = self.thermalisation_check();
-            if i > 2 * self.thermalisation_block_size {
+            // Keep track of thermalisation ratio.
+            let (th_ratio, thermalised) = self.th_ratio();
+            if i > 2 * self.th_block_size {
                 self.stats.thermalisation_ratio_history.push(th_ratio);   
             }
 
+            // Record statistics on every sweep.
             self.record_stats(i, total_sweeps);
-
+            
             if self.stats.thermalised_at.is_none() && thermalised {
                 // System has thermalised, measurements can begin.
                 self.stats.thermalised_at = Some(i);
             }
 
+            // If system is thermalised and some amount of autocorrelation times have passed,
+            // perform another measurement.
             if self.stats.thermalised_at.is_some() && i % self.measurement_interval == 0 {
                 let sum_t = self.get_timeslice();
-                let st = self.lattice.sizes()[0];
+                let st = self.lattice.dimensions()[0];
 
                 for t in 0..st {
                     let mut config_corr = 0.0;
@@ -515,30 +641,10 @@ impl Sim {
             // let thermalised = self.check_thermalisation();
         }
 
-        for t in 0..self.lattice.sizes()[0] {
+        for t in 0..self.lattice.dimensions()[0] {
             self.correlation_slices[t] /= self.stats.performed_measurements as f64;
         }
 
         println!("Checkerboard simulation completed");
-    }
-
-    pub fn mass_squared(&self) -> f64 {
-        self.mass_squared
-    }
-
-    pub fn coupling(&self) -> f64 {
-        self.coupling
-    }
-
-    pub fn total_moves(&self) -> usize {
-        self.stats.total_moves.load(Ordering::Relaxed)
-    }
-
-    pub fn accepted_moves(&self) -> usize {
-        self.stats.accepted_moves.load(Ordering::Relaxed)
-    }
-
-    pub fn lattice(&self) -> &ScalarLattice4D {
-        &self.lattice
     }
 }

@@ -18,7 +18,7 @@ impl ScalarLattice4D {
     }
 
     /// Returns odd and even indices.
-    pub fn generate_indices(&self) -> (Vec<usize>, Vec<usize>) {
+    pub fn generate_checkerboard(&self) -> (Vec<usize>, Vec<usize>) {
         let [st, sx, sy, sz] = self.sizes;
         let stotal: usize = self.sizes.iter().sum();
 
@@ -48,8 +48,29 @@ impl ScalarLattice4D {
         (red, black)
     }
 
-    pub fn sizes(&self) -> [usize; 4] {
+    /// The dimensions of the lattice
+    pub fn dimensions(&self) -> [usize; 4] {
         self.sizes
+    }
+
+    /// The size of the lattice in the `t` dimension.
+    pub fn t_dim(&self) -> usize {
+        self.sizes[0]
+    }
+
+    /// The size of the lattice in the `x` dimension.
+    pub fn x_dim(&self) -> usize {
+        self.sizes[1]
+    }
+
+    /// The size of the lattice in the `y` dimension.
+    pub fn y_dim(&self) -> usize {
+        self.sizes[2]
+    }
+
+    /// The size of the lattice in the `z` dimension.
+    pub fn z_dim(&self) -> usize {
+        self.sizes[3]
     }
 
     /// Computes the mean of the lattice

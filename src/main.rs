@@ -1,9 +1,10 @@
 mod lattice;
 mod sim;
 mod vis;
+mod setup;
 
 use crate::lattice::ScalarLattice4D;
-use crate::sim::{InitialFieldValue, Sim, SimBuilder, SimStatistics};
+use crate::sim::{InitialState, System, SystemBuilder, SystemStats};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 use std::ops::Range;
@@ -19,7 +20,7 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
         .margin(5)
         .top_x_label_area_size(40)
         .y_label_area_size(40)
-        .build_cartesian_2d(0..lattice.sizes()[2], 0..lattice.sizes()[3])?;
+        .build_cartesian_2d(0..lattice.dimensions()[2], 0..lattice.dimensions()[3])?;
 
     chart
         .configure_mesh()
@@ -33,7 +34,7 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
         .label_style(("sans-serif", 20))
         .draw()?;
 
-    let grid = (0..lattice.sizes()[3]).flat_map(|y| (0..lattice.sizes()[2]).map(move |x| (x, y)));
+    let grid = (0..lattice.dimensions()[3]).flat_map(|y| (0..lattice.dimensions()[2]).map(move |x| (x, y)));
     chart.draw_series(grid.map(|(y, z)| {
         let val = unsafe { *lattice[[0, 0, y, z]].get() };
 
@@ -114,7 +115,7 @@ fn find_max(data: &[f64]) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn plot_observable(desc: GraphDesc, sim: &Sim) -> anyhow::Result<()> {
+fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
     let filename = format!("plots/{}", desc.file);
     let stats = sim.stats();
 
@@ -126,9 +127,9 @@ fn plot_observable(desc: GraphDesc, sim: &Sim) -> anyhow::Result<()> {
         format!("Mass squared: {:.2}", sim.mass_squared()),
         format!("Coupling: {:.2}", sim.coupling()),
         format!("Acceptance ratio target: {:.0}%-{:.0}%", sim.lower_acceptance() * 100.0, sim.upper_acceptance() * 100.0),
-        format!("Action block size: {} sweeps", sim.thermalisation_block_size()),
-        format!("Action block average threshold {}", sim.thermalisation_threshold()),
-        format!("Step size correction every {} iterations", sim.acceptance_interval()),
+        format!("Action block size: {} sweeps", sim.th_block_size()),
+        format!("Action block average threshold {}", sim.th_threshold()),
+        format!("Step size correction every {} iterations", sim.step_size_correction_interval()),
         format!("A sweep is {} iterations", sim.lattice().sweep_size()),
         format!("System reached equilibrium at sweep {}", stats.thermalised_at.map(|s| s.to_string()).unwrap_or("NA".to_owned())),
         format!("Performed {} measurements", stats.performed_measurements)
@@ -208,7 +209,7 @@ fn plot_observable(desc: GraphDesc, sim: &Sim) -> anyhow::Result<()> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut sim = SimBuilder::new()
+    let mut sim = SystemBuilder::new()
         .sizes([40, 25, 25, 25])
         .spacing(1.0)
         .initial_step_size(0.1)
@@ -216,7 +217,7 @@ fn main() -> anyhow::Result<()> {
         .lower_acceptance(0.3)
         .mass_squared(1.0)
         .coupling(0.5)
-        .initial_value(InitialFieldValue::RandomRange(-0.5..0.5))
+        .initial_value(InitialState::RandomRange(-0.5..0.5))
         .thermalisation_block_size(100)
         .thermalisation_threshold(0.005)
         .build()?;
@@ -245,7 +246,7 @@ fn main() -> anyhow::Result<()> {
         .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
         .collect::<Vec<_>>();
 
-    let tdata = (0..sim.lattice().sizes()[0]).map(|v| v as f64).collect::<Vec<_>>();
+    let tdata = (0..sim.lattice().dimensions()[0]).map(|v| v as f64).collect::<Vec<_>>();
     // let corr2 = sim.correlator2();
 
     let desc = GraphDesc {
@@ -274,7 +275,7 @@ fn main() -> anyhow::Result<()> {
             },
             GraphData {
                 caption: "Action block average",
-                xdata: &sweepx[sim.thermalisation_block_size() * 2..],
+                xdata: &sweepx[sim.th_block_size() * 2..],
                 ydata: &stats.thermalisation_ratio_history,
                 ..Default::default()
             },
@@ -287,7 +288,7 @@ fn main() -> anyhow::Result<()> {
             GraphData {
                 caption: "Step size",
                 xdata: &sweepx,
-                ydata: &stats.dvar_history,
+                ydata: &stats.step_size_history,
                 ylim: 0.75..1.25,
                 ..Default::default()
             },
