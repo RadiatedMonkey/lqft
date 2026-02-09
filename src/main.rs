@@ -3,8 +3,9 @@ mod sim;
 mod vis;
 
 use crate::lattice::ScalarLattice4D;
-use crate::sim::{InitialFieldValue, SimBuilder};
+use crate::sim::{InitialFieldValue, Sim, SimBuilder, SimStatistics};
 use plotters::prelude::*;
+use plotters::style::text_anchor::{HPos, Pos, VPos};
 use std::ops::Range;
 
 fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
@@ -65,28 +66,36 @@ fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
 
 pub struct GraphData<'a> {
     pub caption: &'a str,
+    pub ydesc: &'a str,
     pub xdata: &'a [f64],
     pub ydata: &'a [f64],
     pub xlim: Range<f64>,
     pub ylim: Range<f64>,
+    pub description: &'a str
 }
 
 impl<'a> Default for GraphData<'a> {
     fn default() -> Self {
         Self {
             caption: "",
+            ydesc: "",
             xdata: &[],
             ydata: &[],
             xlim: 0.0..0.0,
             ylim: 0.0..0.0,
+            description: ""
         }
     }
 }
 
 pub struct GraphDesc<'a, 'b> {
+    pub dimensions: (u32, u32),
     pub file: &'a str,
     pub graphs: &'a [GraphData<'b>],
     pub layout: (usize, usize),
+    /// The amount of samples to throw away. The initial samples usually generate extremely
+    /// tall peaks obscuring the rest of the data.
+    pub burnin_time: usize
 }
 
 /// Custom function to find the smallest float in a slice since floats don't implement Eq.
@@ -105,29 +114,54 @@ fn find_max(data: &[f64]) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
+fn plot_observable(desc: GraphDesc, sim: &Sim) -> anyhow::Result<()> {
     let filename = format!("plots/{}", desc.file);
+    let stats = sim.stats();
 
-    let root = BitMapBackend::new(&filename, (3000, 3000)).into_drawing_area();
+    let root = BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
     root.fill(&WHITE)?;
 
+    let lines = [
+        format!("Lattice spacing: {:.2}", sim.spacing()),
+        format!("Mass squared: {:.2}", sim.mass_squared()),
+        format!("Coupling: {:.2}", sim.coupling()),
+        format!("Acceptance ratio target: {:.0}%-{:.0}%", sim.lower_acceptance() * 100.0, sim.upper_acceptance() * 100.0),
+        format!("Action block size: {} sweeps", sim.thermalisation_block_size()),
+        format!("Action block average threshold {}", sim.thermalisation_threshold()),
+        format!("Step size correction every {} iterations", sim.acceptance_interval()),
+        format!("A sweep is {} iterations", sim.lattice().sweep_size()),
+        format!("System reached equilibrium at sweep {}", stats.thermalised_at.map(|s| s.to_string()).unwrap_or("NA".to_owned())),
+        format!("Performed {} measurements", stats.performed_measurements)
+    ];
+
+    for (i, line) in lines.iter().enumerate() {
+        root.draw_text(
+            line, &TextStyle::from(("sans-serif", 30)),
+            (50, 50 + 30 * i as i32)
+        )?;
+    }
+
     let areas = root.split_evenly(desc.layout);
-    for (i, area) in areas.iter().enumerate() {
-        let opt = desc.graphs.get(i);
+
+    // Skip first plot to use as text.
+    for (i, area) in areas.iter().enumerate().skip(1) {
+        let opt = desc.graphs.get(i - 1);
         if opt.is_none() {
             break;
         }
 
         let graph = opt.unwrap();
-
+        
+        let xdata = &graph.xdata[desc.burnin_time..];
         let (xmin, xmax) = if graph.xlim.is_empty() {
-            (find_min(graph.xdata), find_max(graph.xdata))
+            (find_min(xdata), find_max(xdata))
         } else {
             (graph.xlim.start, graph.xlim.end)
         };
 
+        let ydata = &graph.ydata[desc.burnin_time..];
         let (ymin, ymax) = if graph.ylim.is_empty() {
-            (find_min(graph.ydata), find_max(graph.ydata))
+            (find_min(ydata), find_max(ydata))
         } else {
             (graph.ylim.start, graph.ylim.end)
         };
@@ -139,12 +173,32 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
             .caption(graph.caption, ("sans-serif", 40))
             .build_cartesian_2d(xmin..xmax, ymin..ymax)?;
 
-        cc.configure_mesh().x_labels(10).y_labels(10).draw()?;
+        cc.configure_mesh()
+            .x_labels(10)
+            .x_label_formatter(&|v| format!("{v:.0}"))
+            .x_desc("Sweeps")
+            .y_labels(10)
+            .y_desc(graph.ydesc)
+            .draw()?;
 
+        // Plot observable
         cc.draw_series(LineSeries::new(
-            graph.xdata.iter().copied().zip(graph.ydata.iter().copied()),
+            xdata.iter().copied().zip(ydata.iter().copied()),
             &BLUE,
         ))?;
+
+        if let Some(point) = stats.thermalised_at {
+            // Plot thermalisation point
+            cc.draw_series(DashedLineSeries::new(
+                vec![(point as f64, ymin), (point as f64, ymax)],
+                2, 4,
+                ShapeStyle {
+                    color: RED.mix(1.0),
+                    filled: false,
+                    stroke_width: 1
+                }
+            ))?;
+        }   
     }
 
     root.present()?;
@@ -155,21 +209,21 @@ fn plot_function(desc: GraphDesc) -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     let mut sim = SimBuilder::new()
-        .sizes([40, 15, 15, 15])
+        .sizes([40, 25, 25, 25])
         .spacing(1.0)
-        .initial_step_size(0.75)
+        .initial_step_size(0.1)
         .upper_acceptance(0.5)
         .lower_acceptance(0.3)
-        .mass_squared(0.5)
-        .coupling(0.0)
-        .initial_value(InitialFieldValue::RandomRange(-0.1..0.1))
+        .mass_squared(1.0)
+        .coupling(0.5)
+        .initial_value(InitialFieldValue::RandomRange(-0.5..0.5))
         .thermalisation_block_size(100)
-        .thermalisation_threshold(0.01)
+        .thermalisation_threshold(0.005)
         .build()?;
 
     plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 500;
+    let total_sweeps = 50000;
     sim.simulate_checkerboard(total_sweeps);
 
     println!("Printing lattice");
@@ -191,34 +245,36 @@ fn main() -> anyhow::Result<()> {
         .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
         .collect::<Vec<_>>();
 
-    // let tdata = (0..sim.lattice().sizes()[0]).map(|v| v as f64).collect::<Vec<_>>();
+    let tdata = (0..sim.lattice().sizes()[0]).map(|v| v as f64).collect::<Vec<_>>();
     // let corr2 = sim.correlator2();
 
     let desc = GraphDesc {
+        dimensions: (2000, 2000),
         file: "layout.png",
         layout: (3, 3),
+        burnin_time: 0,
         graphs: &[
             GraphData {
-                caption: "Field Mean",
+                caption: "Mean value",
                 xdata: &sweepx,
                 ydata: &stats.mean_history,
                 ..Default::default()
             },
             GraphData {
-                caption: "Field Variance",
+                caption: "Variance",
                 xdata: &sweepx,
                 ydata: &variance,
                 ..Default::default()
             },
             GraphData {
-                caption: "Field Mean Squared",
+                caption: "Mean squared",
                 xdata: &sweepx,
                 ydata: &stats.meansq_history,
                 ..Default::default()
             },
             GraphData {
-                caption: &format!("Action block average ratio (size {})", sim.thermalisation_block_size()),
-                xdata: &sweepx,
+                caption: "Action block average",
+                xdata: &sweepx[sim.thermalisation_block_size() * 2..],
                 ydata: &stats.thermalisation_ratio_history,
                 ..Default::default()
             },
@@ -229,24 +285,23 @@ fn main() -> anyhow::Result<()> {
                 ..Default::default()
             },
             GraphData {
-                caption: "Step Size",
+                caption: "Step size",
                 xdata: &sweepx,
                 ydata: &stats.dvar_history,
                 ylim: 0.75..1.25,
                 ..Default::default()
             },
             GraphData {
-                caption: "Acceptance Ratio",
+                caption: "Acceptance ratio",
                 xdata: &sweepx,
                 ydata: &stats.accept_ratio_history,
                 ylim: 20.0..80.0,
                 ..Default::default()
             },
             GraphData {
-                caption: "Accepted Moves",
-                xdata: &sweepx,
-                ydata: &accepted_moves,
-                ylim: 0.0..(sim.total_moves() as f64),
+                caption: "2-point correlator",
+                xdata: &tdata,
+                ydata: sim.correlator2(),
                 ..Default::default()
             },
             // GraphData {
@@ -257,7 +312,9 @@ fn main() -> anyhow::Result<()> {
             // }
         ],
     };
-    plot_function(desc)?;
+    plot_observable(desc, &sim)?;
+
+    println!("System thermalised at sweep {:?}", sim.stats().thermalised_at);
 
     Ok(())
 }

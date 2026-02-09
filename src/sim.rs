@@ -42,7 +42,7 @@ impl SimBuilder {
             upper_acceptance: 0.82,
             thermalisation_threshold: 0.01,
             thermalisation_block_size: 100,
-            acceptance_update_interval: 1000,
+            acceptance_update_interval: 1000
         }
     }
 
@@ -131,7 +131,9 @@ impl SimBuilder {
             stats: SimStatistics::default(),
             acceptance_interval: self.acceptance_update_interval,
             thermalisation_block_size: self.thermalisation_block_size,
-            thermalisation_threshold: self.thermalisation_threshold
+            thermalisation_threshold: self.thermalisation_threshold,
+            correlation_slices: Vec::new(),
+            measurement_interval: 50
         };
 
         let first_action = sim.compute_full_action();
@@ -170,7 +172,11 @@ pub struct SimStatistics {
     pub action_history: Vec<f64>,
     /// The action at the current point in time.
     pub current_action: AtomicF64,
-    pub thermalisation_ratio_history: Vec<f64>
+    /// The history of the thermalisation ratio.
+    pub thermalisation_ratio_history: Vec<f64>,
+    /// The sweep at which the system first passed the thermalisation threshold.
+    pub thermalised_at: Option<usize>,
+    pub performed_measurements: usize
 }
 
 impl SimStatistics {
@@ -197,7 +203,9 @@ impl Default for SimStatistics {
             mean_history: Vec::new(),
             meansq_history: Vec::new(),
             action_history: Vec::new(),
-            thermalisation_ratio_history: Vec::new()
+            thermalisation_ratio_history: Vec::new(),
+            thermalised_at: None,
+            performed_measurements: 0
         }
     }
 }
@@ -217,12 +225,33 @@ pub struct Sim {
     thermalisation_threshold: f64,
     thermalisation_block_size: usize,
 
+    /// A vector for every possible C(t)
+    /// where the inner vector is for every sweep
+    correlation_slices: Vec<f64>,
+    measurement_interval: usize,
+
     stats: SimStatistics,
 }
 
 impl Sim {
     pub fn stats(&self) -> &SimStatistics {
         &self.stats
+    }
+
+    pub fn spacing(&self) -> f64 {
+        self.spacing
+    }
+
+    pub fn lower_acceptance(&self) -> f64 {
+        self.lower_acceptance
+    }
+
+    pub fn upper_acceptance(&self) -> f64 {
+        self.upper_acceptance
+    }
+
+    pub fn acceptance_interval(&self) -> usize {
+        self.acceptance_interval
     }
 
     pub fn thermalisation_threshold(&self) -> f64 {
@@ -235,6 +264,10 @@ impl Sim {
 
     pub fn step_size(&self) -> f64 {
         self.step_size.load(Ordering::Relaxed)
+    }
+
+    pub fn correlator2(&self) -> &[f64] {
+        &self.correlation_slices
     }
 
     /// Determines whether thermalisation of the system has finished.
@@ -383,7 +416,42 @@ impl Sim {
         println!("Acceptance ratio: {:.2}%", ratio);
     }
 
+    fn get_timeslice(&mut self) -> Vec<f64> {
+        // Compute the spatial sum for every time slice
+        let [st, sx, sy, sz] = self.lattice.sizes();
+
+        let mut sum_t = vec![0.0; st];
+        for i in 0..self.lattice.sweep_size() {
+            let t = self.lattice.from_index(i)[0];
+            let val = unsafe { *self.lattice[i].get() };
+            sum_t[t] += val;
+        }
+
+        sum_t
+
+        // let sweep_size = self.lattice.sweep_size();
+        // let st = self.lattice.sizes()[0];
+
+        // for t in 0..self.lattice.sizes()[0] {
+        //     let mut sum = 0.0;
+        //     for i in 0..self.lattice.sweep_size() {
+        //         let pos = self.lattice.from_index(i);
+                
+        //         let tn = (pos[0] + t) % st;
+        //         let curr = unsafe { *self.lattice[i].get() };
+
+        //         let apos = [tn, pos[1], pos[2], pos[3]];
+        //         let advanced: f64 = unsafe { *self.lattice[apos].get() };
+
+        //         sum += (curr * advanced) / (total_sweeps * sweep_size) as f64;
+        //     }
+
+        //     self.correlation_slices[t] += sum;
+        // }
+    }
+
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) {
+        self.correlation_slices.resize(self.lattice.sizes()[0], 0.0);
         let (red, black) = self.lattice.generate_indices();
 
         println!("Simulating using checkerboard method...");
@@ -416,19 +484,50 @@ impl Sim {
             });
 
             let (th_ratio, thermalised) = self.thermalisation_check();
-            self.stats.thermalisation_ratio_history.push(th_ratio);
+            if i > 2 * self.thermalisation_block_size {
+                self.stats.thermalisation_ratio_history.push(th_ratio);   
+            }
 
             self.record_stats(i, total_sweeps);
 
-            if thermalised {
-                println!("The system has thermalised with ratio {:.2}!", th_ratio);
-                break
+            if self.stats.thermalised_at.is_none() && thermalised {
+                // System has thermalised, measurements can begin.
+                self.stats.thermalised_at = Some(i);
+            }
+
+            if self.stats.thermalised_at.is_some() && i % self.measurement_interval == 0 {
+                let sum_t = self.get_timeslice();
+                let st = self.lattice.sizes()[0];
+
+                for t in 0..st {
+                    let mut config_corr = 0.0;
+                    for tp in 0..st {
+                        let t_dist = (tp + t) % st;
+                        config_corr += sum_t[tp] * sum_t[t_dist];
+                    }
+
+                    self.correlation_slices[t] += config_corr / (st as f64);
+                }
+
+                self.stats.performed_measurements += 1;
             }
 
             // let thermalised = self.check_thermalisation();
         }
 
+        for t in 0..self.lattice.sizes()[0] {
+            self.correlation_slices[t] /= self.stats.performed_measurements as f64;
+        }
+
         println!("Checkerboard simulation completed");
+    }
+
+    pub fn mass_squared(&self) -> f64 {
+        self.mass_squared
+    }
+
+    pub fn coupling(&self) -> f64 {
+        self.coupling
     }
 
     pub fn total_moves(&self) -> usize {
