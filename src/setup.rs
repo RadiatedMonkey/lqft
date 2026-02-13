@@ -39,13 +39,15 @@ impl System {
 
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.lower_acceptance {
+            let correction = 1.0 - self.step_size_correction();
             let _ = self
                 .step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 0.95));
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
         } else if acceptance_ratio > self.upper_acceptance {
+            let correction = 1.0 + self.step_size_correction();
             let _ = self
                 .step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * 1.05));
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
         }
     }
 

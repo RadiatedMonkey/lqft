@@ -43,8 +43,7 @@ pub struct SystemBuilder {
     initial_step_size: f64,
     lower_acceptance: f64,
     upper_acceptance: f64,
-    step_size_increase: f64,
-    step_size_decrease: f64,
+    step_size_correction: f64,
 
     acceptance_update_interval: usize,
     thermalisation_threshold: f64,
@@ -65,33 +64,21 @@ impl SystemBuilder {
             bare_coupling: 0.0,
             lower_acceptance: 0.3,
             upper_acceptance: 0.5,
-            step_size_increase: 1.05,
-            step_size_decrease: 0.95,
+            step_size_correction: 0.05,
             thermalisation_threshold: 0.01,
             thermalisation_block_size: 100,
             acceptance_update_interval: 1000
         }
     }
 
-    /// Sets the increase in step size for each correction.
+    /// Sets the change in step size for each correction.
     /// 
     /// If the system determines the acceptance ratio to be outside of the desired range,
-    /// it may increase the step size by this ratio.
+    /// it may increase or decrease the step size by this ratio.
     /// 
-    /// Default value: `1.05`
-    pub fn step_size_increase(mut self, value: f64) -> Self {
-        self.step_size_increase = value;
-        self
-    }
-
-    /// Sets the decrease in step size for each correction.
-    /// 
-    /// If the system determines the accceptance ratio to be outside of the desired range,
-    /// it may decrease the step size by this ratio.
-    /// 
-    /// Default value: `0.95`.
-    pub fn step_size_decrease(mut self, value: f64) -> Self {
-        self.step_size_decrease = value;
+    /// Default value: `0.05`
+    pub fn step_size_correction(mut self, value: f64) -> Self {
+        self.step_size_correction = value;
         self
     }
 
@@ -187,20 +174,20 @@ impl SystemBuilder {
         self
     }   
 
-    /// Sets the thermalisation threshold. See [`th_ratio`](Sim::th_ratio) for more information on how thermalisation
+    /// Sets the thermalisation threshold. See [`th_ratio`](System::th_ratio) for more information on how thermalisation
     /// works.
     /// 
     /// Default value: `0.01`.
-    pub fn thermalisation_threshold(mut self, value: f64) -> Self {
+    pub fn th_threshold(mut self, value: f64) -> Self {
         self.thermalisation_threshold = value;
         self
     }
 
-    /// Sets the thermalisation block size. See [`th_ratio`](Sim::th_ratio) for more information on how thermalisation
+    /// Sets the thermalisation block size. See [`th_ratio`](System::th_ratio) for more information on how thermalisation
     /// works.
     /// 
     /// Default value: `100`.
-    pub fn thermalisation_block_size(mut self, value: usize) -> Self {
+    pub fn th_block_size(mut self, value: usize) -> Self {
         self.thermalisation_block_size = value;
         self
     }
@@ -220,6 +207,7 @@ impl SystemBuilder {
             coupling: self.bare_coupling,
             lower_acceptance: self.lower_acceptance,
             upper_acceptance: self.upper_acceptance,
+            step_size_correction: self.step_size_correction,
             stats: SystemStats::default(),
             step_size_correction_interval: self.acceptance_update_interval,
             th_block_size: self.thermalisation_block_size,
@@ -331,6 +319,7 @@ all_public_in!(super, pub struct System {
     coupling: f64,
 
     step_size_correction_interval: usize,
+    step_size_correction: f64,
     lower_acceptance: f64,
     upper_acceptance: f64,
 
@@ -398,6 +387,13 @@ impl System {
     /// configure the step size by itself.
     pub fn set_step_size(&self, value: f64) {
         self.step_size.store(value, Ordering::Relaxed);
+    }
+
+    /// Gives the current step size correction.
+    /// 
+    /// See [`SystemBuilder::step_size_correction`](SystemBuilder::step_size_correction) for more information.
+    pub fn step_size_correction(&self) -> f64 {
+        self.step_size_correction
     }
 
     pub fn correlator2(&self) -> &[f64] {
