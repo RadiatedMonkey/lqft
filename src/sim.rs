@@ -3,13 +3,19 @@ use atomic_float::AtomicF64;
 use num_traits::Pow;
 use rand::Rng;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-
+use std::thread;
+use std::thread::{Thread, ThreadId};
+use std::time::{SystemTime, UNIX_EPOCH};
+use anyhow::anyhow;
 use rayon::prelude::*;
+use hdf5_metno as hdf5;
+use ndarray::ArrayView5;
 
 /// Makes all struct fields public in the current and specified modules.
-/// This makes it easier to spread implementation details over multiple files.
+/// This makes it easier to spread implementation details over multiple archive.
 macro_rules! all_public_in {
     ($module:path, $vis:vis struct $name:ident {
         $(
@@ -49,6 +55,9 @@ pub struct SystemBuilder {
     thermalisation_threshold: f64,
     thermalisation_block_size: usize,
 
+    archive_filename: Option<String>,
+    archive_chunk_size: [usize; 5],
+
     mass_squared: f64,
     bare_coupling: f64,
 }
@@ -56,6 +65,8 @@ pub struct SystemBuilder {
 impl SystemBuilder {
     pub fn new() -> Self {
         Self {
+            archive_filename: None,
+            archive_chunk_size: [1, 8, 8, 8, 8],
             spacing: 1.0,
             sizes: [40, 20, 20, 20],
             initial_state: InitialState::Fixed(0.0),
@@ -69,6 +80,16 @@ impl SystemBuilder {
             thermalisation_block_size: 100,
             acceptance_update_interval: 1000
         }
+    }
+
+    pub fn archive_filename<T: Into<String>>(mut self, filename: T) -> Self {
+        self.archive_filename = Some(filename.into());
+        self
+    }
+
+    pub fn archive_chunk_size<T: Into<[usize; 5]>>(mut self, size: T) -> Self {
+        self.archive_chunk_size = size.into();
+        self
     }
 
     /// Sets the change in step size for each correction.
@@ -199,7 +220,32 @@ impl SystemBuilder {
             InitialState::RandomRange(range) => ScalarLattice4D::random(self.sizes, range),
         };
 
+        let archive = self.archive_filename.map(hdf5::File::append).transpose()?;
+        let dataset = archive.as_ref().map(|archive| {
+            let elapsed = UNIX_EPOCH.elapsed()?.as_secs();
+
+            let [st, sx, sy, sz] = lattice.dimensions();
+
+            let set_name = format!("data-{elapsed}");
+            let set = archive
+                .new_dataset::<f64>()
+                .chunk(self.archive_chunk_size)
+                .shape((1.., st, sx, sy, sz))
+                .shuffle()
+                .fletcher32()
+                .deflate(5)
+                .create(set_name.as_str())?;
+
+            println!("Dataset {set_name} created");
+
+            Ok::<hdf5_metno::Dataset, anyhow::Error>(set)
+        }).transpose()?;
+
         let mut sim = System {
+            archive_chunk_size: self.archive_chunk_size,
+            archive,
+            dataset,
+            current_sweep: 0,
             lattice,
             spacing: self.spacing,
             step_size: AtomicF64::new(self.initial_step_size),
@@ -326,10 +372,16 @@ all_public_in!(super, pub struct System {
     th_threshold: f64,
     th_block_size: usize,
 
+    dataset: Option<hdf5::Dataset>,
+    archive: Option<hdf5::File>,
+    archive_chunk_size: [usize; 5],
+
     /// A vector for every possible C(t)
     /// where the inner vector is for every sweep
     correlation_slices: Vec<f64>,
     measurement_interval: usize,
+
+    current_sweep: usize,
 
     stats: SystemStats,
 });
@@ -375,6 +427,10 @@ impl System {
     /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
     pub fn th_block_size(&self) -> usize {
         self.th_block_size
+    }
+
+    pub fn current_sweep(&self) -> usize {
+        self.current_sweep
     }
 
     pub fn step_size(&self) -> f64 {
@@ -528,13 +584,6 @@ impl System {
         self.stats.accepted_move_history.push(accept);
         self.stats.accept_ratio_history.push(ratio);
         self.stats.step_size_history.push(self.step_size());
-
-        // TODO: Create proper progress bar.
-        println!(
-            "Sweep progress ({:.2}%): {current_sweep}/{total_sweeps}",
-            current_sweep as f64 / total_sweeps as f64 * 100.0
-        );
-        println!("Acceptance ratio: {:.2}%", ratio);
     }
 
     fn get_timeslice(&mut self) -> Vec<f64> {
@@ -565,7 +614,8 @@ impl System {
     /// To make this work, the lattice makes use of interior mutability. While red is being simulated, all red sites are updated
     /// by independent threads (i.e. every red site is only accessed by a single thread at once). The black sites are not updated
     /// and are accessed by multiple threads at a time. The same holds for simulating black sites.
-    pub fn simulate_checkerboard(&mut self, total_sweeps: usize) {
+    pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
+        self.initialize_archive(total_sweeps)?;
         self.stats.reserve_capacity(total_sweeps);
         self.correlation_slices.resize(self.lattice.dimensions()[0], 0.0);
         let (red, black) = self.lattice.generate_checkerboard();
@@ -573,6 +623,8 @@ impl System {
         println!("Simulating {total_sweeps} sweeps using checkerboard method...");
         
         for i in 0..total_sweeps {
+            self.current_sweep = i;
+
             // First update red sites....
             red.par_iter().for_each(|&index| {
                 // SAFETY: Since this is a red site, this thread has exclusive access to the site.
@@ -634,6 +686,14 @@ impl System {
                 self.stats.performed_measurements += 1;
             }
 
+            if let Err(err) = self.archive_state() {
+                eprintln!("Failed to archive sweep {i}: {err}");
+            }
+
+            if i % 10 == 0 {
+                println!("Sweep {i}/{total_sweeps}");
+            }
+
             // let thermalised = self.check_thermalisation();
         }
 
@@ -642,5 +702,49 @@ impl System {
         }
 
         println!("Checkerboard simulation completed");
+        Ok(())
+    }
+
+    fn initialize_archive(&mut self, sweeps: usize) -> anyhow::Result<()> {
+        if let Some(set) = self.dataset.as_ref() {
+            let [st, sx, sy, sz] = self.lattice.dimensions();
+            set.resize([sweeps, st, sx, sy, sz])?;
+        }
+        Ok(())
+    }
+
+    fn archive_state(&mut self) -> anyhow::Result<()> {
+        if let Some(set) = self.dataset.as_ref() {
+            let lattice = &self.lattice.sites;
+            let raw_slice: &[f64] = unsafe {
+                std::slice::from_raw_parts(lattice.as_ptr() as *const f64, lattice.len())
+            };
+
+            let [st, sx, sy, sz] = self.lattice.dimensions();
+            let sweep_size = self.lattice.sweep_size();
+
+            assert_eq!(raw_slice.len(), sweep_size);
+
+            let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice)?;
+            let selection = [
+                self.current_sweep..self.current_sweep + 1,
+                0..st, 0..sx, 0..sy, 0..sz
+            ];
+
+            set.write_slice(
+                view, ndarray::s![self.current_sweep..self.current_sweep+1, .., .., .., ..]
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for System {
+    fn drop(&mut self) {
+        if let Some(archive) = self.archive.take() {
+            archive.flush().expect("Failed to flush data");
+            archive.close().expect("Failed to close archive");
+        }
     }
 }

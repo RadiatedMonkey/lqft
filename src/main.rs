@@ -4,7 +4,7 @@ mod visual;
 mod setup;
 mod store;
 
-use crate::lattice::ScalarLattice4D;
+use std::time::UNIX_EPOCH;
 use crate::sim::{InitialState, System, SystemBuilder};
 use plotters::prelude::*;
 use crate::visual::{plot_observable, GraphData, GraphDesc};
@@ -19,13 +19,14 @@ fn main() -> anyhow::Result<()> {
         .mass_squared(1.0)
         .coupling(0.5)
         .initial_value(InitialState::RandomRange(-0.5..0.5))
-        .th_block_size(100)
+        .archive_filename("archive/archive.hdf5")
+        .th_block_size(10)
         .th_threshold(0.005)
         .build()?;
 
     visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50000;
+    let total_sweeps = 50;
     sim.simulate_checkerboard(total_sweeps);
 
     println!("Printing lattice");
@@ -95,12 +96,12 @@ fn main() -> anyhow::Result<()> {
                 ylim: 20.0..80.0,
                 ..Default::default()
             },
-            GraphData {
-                caption: "2-point correlator",
-                xdata: &tdata,
-                ydata: sim.correlator2(),
-                ..Default::default()
-            },
+            // GraphData {
+            //     caption: "2-point correlator",
+            //     xdata: &tdata,
+            //     ydata: sim.correlator2(),
+            //     ..Default::default()
+            // }, // FIXME: Correlator2 seems to be filled with NaNs
             // GraphData {
             //     caption: "2-point Function",
             //     xdata: &tdata,

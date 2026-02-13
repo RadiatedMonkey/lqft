@@ -596,6 +596,7 @@ dependencies = [
  "anyhow",
  "atomic_float",
  "hdf5-metno",
+ "ndarray",
  "num-traits",
  "plotters",
  "rand",
