@@ -7,26 +7,35 @@ mod stats;
 
 use std::time::UNIX_EPOCH;
 use plotters::prelude::*;
-use crate::setup::{InitialState, SystemBuilder};
+use crate::setup::{AcceptanceDesc, BurnInDesc, InitialState, LatticeDesc, SnapshotDesc, SnapshotType, SystemBuilder};
 use crate::snapshot::FlushMethod;
 use crate::visual::{plot_observable, GraphData, GraphDesc};
 
 fn main() -> anyhow::Result<()> {
     let mut sim = SystemBuilder::new()
-        .sizes([40, 25, 25, 25])
-        .spacing(1.0)
-        .initial_step_size(0.1)
-        .upper_acceptance(0.5)
-        .lower_acceptance(0.3)
         .mass_squared(1.0)
         .coupling(0.5)
-        .initial_value(InitialState::RandomRange(-0.5..0.5))
-        .snapshot_filename("archive/archive.h5")
-        .snapshot_chunk_size([1, 40, 25, 25, 25])
-        .snapshot_flush_method(FlushMethod::Batched)
-        .snapshot_batch_size(10)
-        .th_block_size(10)
-        .th_threshold(0.005)
+        .enable_snapshot(SnapshotDesc {
+            file: "snapshots/snapshots.h5".to_string(),
+            ty: SnapshotType::Checkpoint,
+            chunk_size: [16; 4],
+            flush_method: FlushMethod::Sequential,
+        })
+        .with_lattice(LatticeDesc {
+            dimensions: [40, 20, 20, 20],
+            initial_state: InitialState::RandomRange(-0.5..0.5),
+            spacing: 1.0
+        })
+        .with_acceptance(AcceptanceDesc {
+            correction_interval: 20_000,
+            initial_step_size: 1.0,
+            desired_range: 0.3..0.5,
+            correction_size: 0.05
+        })
+        .with_burn_in(BurnInDesc {
+            avg_block_size: 10,
+            desired_ratio: 0.05
+        })
         .build()?;
 
     visual::plot_lattice(0, sim.lattice())?;
@@ -34,7 +43,6 @@ fn main() -> anyhow::Result<()> {
     let total_sweeps = 50;
     sim.simulate_checkerboard(total_sweeps)?;
 
-    println!("Printing lattice");
     visual::plot_lattice(1, sim.lattice())?;
 
     let stats = sim.stats();

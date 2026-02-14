@@ -5,28 +5,30 @@ use std::time::Instant;
 use hdf5_metno as hdf5;
 use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
 use crate::lattice::ScalarLattice4D;
+use crate::setup::SnapshotDesc;
 use crate::stats::SweepStats;
 
-/// Which method to use for flushing snapshot fragments.
+/// Which method to use for flushing snapshots fragments.
 #[derive(PartialEq, Copy, Clone)]
 pub enum FlushMethod {
     /// Saves all fragments sequentially. This uses less RAM but is much slower.
     Sequential,
-    /// Creates a batch of multiple sweeps and flushes them all at once.
-    Batched
+    /// Creates a batch of `n` sweeps and flushes them all at once.
+    Batched(usize)
 }
 
+/// A single snapshots fragment.
+///
+/// This represents one sweep together with its statistics.
 pub struct SnapshotFragment {
     pub(crate) lattice: ScalarLattice4D,
     pub(crate) stats: SweepStats
 }
 
 pub struct SnapshotState {
-    pub flush_method: FlushMethod,
     pub file: hdf5::File,
     pub dataset: Arc<hdf5::Dataset>,
-    pub chunk_size: [usize; 5],
-    pub batch_size: usize,
+    pub desc: SnapshotDesc,
     pub thread: Option<JoinHandle<()>>,
     pub tx: Option<mpsc::Sender<SnapshotFragment>>,
 }
@@ -34,8 +36,7 @@ pub struct SnapshotState {
 struct JobDesc {
     dataset: Arc<hdf5::Dataset>,
     rx: mpsc::Receiver<SnapshotFragment>,
-    st: usize, sx: usize, sy: usize, sz: usize,
-    batch_size: usize
+    st: usize, sx: usize, sy: usize, sz: usize
 }
 
 impl SnapshotState {
@@ -48,7 +49,8 @@ impl SnapshotState {
 
     fn sequential_job(desc: JobDesc) {
         let JobDesc {
-            dataset, rx, st, sx, sy, sz, batch_size
+            dataset,
+            rx, st, sx, sy, sz
         } = desc;
 
         let mut fragment_counter = 0;
@@ -69,17 +71,17 @@ impl SnapshotState {
             let result = dataset.write_slice(
                 view, ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..]
             );
-            if let Err(err) = result { eprintln!("Failed to write snapshot fragment to disk: {err}") }
+            if let Err(err) = result { eprintln!("Failed to write snapshots fragment to disk: {err}") }
 
-            println!("Flushed snapshot fragment {fragment_counter}");
+            println!("Flushed snapshots fragment {fragment_counter}");
 
             fragment_counter += 1;
         }
     }
 
-    fn batch_job(desc: JobDesc) {
+    fn batch_job(desc: JobDesc, batch_size: usize) {
         let JobDesc {
-            batch_size, dataset,
+            dataset,
             rx,
             st, sx, sy, sz,
         } = desc;
@@ -110,10 +112,10 @@ impl SnapshotState {
                 ];
 
                 if let Err(err) = dataset.write_slice(&buffer, selection) {
-                    eprintln!("Failed to write snapshot batch: {err}");
+                    eprintln!("Failed to write snapshots batch: {err}");
                 }
 
-                println!("Wrote {batch_counter} snapshot batch to disk");
+                println!("Wrote {batch_counter} snapshots batch to disk");
 
                 fragment_counter += batch_size;
                 batch_counter = 0;
@@ -121,6 +123,7 @@ impl SnapshotState {
         }
     }
 
+    /// Initialises the snapshots.
     pub fn init(&mut self, [st, sx, sy, sz]: [usize; 4], sweeps: usize) -> anyhow::Result<()> {
         if self.thread.is_some() {
             anyhow::bail!("Another simulation is already running");
@@ -132,15 +135,15 @@ impl SnapshotState {
         self.tx = Some(tx);
 
         let job_desc = JobDesc {
-            dataset: Arc::clone(&self.dataset), rx, st, sx, sy, sz, batch_size: self.batch_size
+            dataset: Arc::clone(&self.dataset),
+            rx, st, sx, sy, sz
         };
 
-        let flush_mode = self.flush_method;
+        let method = self.desc.flush_method;
         self.thread = Some(thread::spawn(move || {
-            if flush_mode == FlushMethod::Sequential {
-                Self::sequential_job(job_desc);
-            } else {
-                Self::batch_job(job_desc);
+            match method {
+                FlushMethod::Sequential => Self::sequential_job(job_desc),
+                FlushMethod::Batched(size) => Self::batch_job(job_desc, size)
             }
 
             println!("Snapshot thread exited");
@@ -151,33 +154,13 @@ impl SnapshotState {
         Ok(())
     }
 
-    // pub fn update_snapshot(&mut self) -> anyhow::Result<()> {
-    //     if let Some(set) = self.dataset.as_ref() {
-    //         let lattice = &self.lattice.sites;
-    //         let raw_slice: &[f64] = unsafe {
-    //             std::slice::from_raw_parts(lattice.as_ptr() as *const f64, lattice.len())
-    //         };
-    //
-    //         let [st, sx, sy, sz] = self.lattice.dimensions();
-    //         let sweep_size = self.lattice.sweep_size();
-    //
-    //         assert_eq!(raw_slice.len(), sweep_size);
-    //
-    //         let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice)?;
-    //         set.write_slice(
-    //             view, ndarray::s![self.current_sweep..self.current_sweep+1, .., .., .., ..]
-    //         )?;
-    //     }
-    //
-    //     Ok(())
-    // }
 }
 
 impl Drop for SnapshotState {
     fn drop(&mut self) {
         // Drop sender to signal to thread.
         let _ = self.tx.take();
-        println!("Waiting for snapshot thread to shut down...");
+        println!("Waiting for snapshots thread to shut down...");
         let now = Instant::now();
         let _ = self.thread.take().map(JoinHandle::join);
         let elapsed = now.elapsed().as_millis();

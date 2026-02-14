@@ -115,14 +115,15 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
     let root = BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
     root.fill(&WHITE)?;
 
+    let acceptance_range = &sim.acceptance_desc.desired_range;
     let lines = [
-        format!("Lattice spacing: {:.2}", sim.spacing()),
+        format!("Lattice spacing: {:.2}", sim.lattice().spacing()),
         format!("Mass squared: {:.2}", sim.mass_squared()),
         format!("Coupling: {:.2}", sim.coupling()),
-        format!("Acceptance ratio target: {:.0}%-{:.0}%", sim.lower_acceptance() * 100.0, sim.upper_acceptance() * 100.0),
+        format!("Acceptance ratio target: {:.0}%-{:.0}%", acceptance_range.start * 100.0, acceptance_range.end * 100.0),
         format!("Action block size: {} sweeps", sim.th_block_size()),
         format!("Action block average threshold {}", sim.th_threshold()),
-        format!("Step size correction every {} iterations", sim.step_size_correction_interval()),
+        format!("Step size correction every {} iterations", sim.acceptance_desc.correction_interval),
         format!("A sweep is {} iterations", sim.lattice().sweep_size()),
         format!("System reached equilibrium at sweep {}", stats.thermalised_at.map(|s| s.to_string()).unwrap_or("NA".to_owned())),
         format!("Performed {} measurements", stats.performed_measurements)

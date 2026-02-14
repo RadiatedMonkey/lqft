@@ -13,6 +13,7 @@ use std::thread::{JoinHandle, Thread};
 use rayon::prelude::*;
 use hdf5_metno as hdf5;
 use ndarray::ArrayView5;
+use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotFragment, SnapshotState};
 use crate::stats::SystemStats;
 
@@ -56,25 +57,19 @@ all_public_in!(super, pub struct System {
     simulating: AtomicBool,
 
     lattice: ScalarLattice4D,
-    spacing: f64,
-    step_size: AtomicF64,
 
     mass_squared: f64,
     coupling: f64,
 
-    step_size_correction_interval: usize,
-    step_size_correction: f64,
-    lower_acceptance: f64,
-    upper_acceptance: f64,
-
-    th_threshold: f64,
-    th_block_size: usize,
+    acceptance_desc: AcceptanceDesc,
+    burn_in_desc: BurnInDesc,
 
     /// A vector for every possible C(t)
     /// where the inner vector is for every sweep
     correlation_slices: Vec<f64>,
     measurement_interval: usize,
 
+    current_step_size: AtomicF64,
     current_sweep: usize,
 
     snapshot_state: Option<SnapshotState>,
@@ -120,7 +115,7 @@ impl System {
                     *self.lattice[index].get() = new_site;
                 };
 
-                if index % self.step_size_correction_interval == 0 && !self.thermalised() {
+                if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised() {
                     self.correct_step_size();
                 }
             });
@@ -134,20 +129,20 @@ impl System {
                     *self.lattice[index].get() = new_site;
                 }
 
-                if index % self.step_size_correction_interval == 0 && !self.thermalised() {
+                if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised() {
                     self.correct_step_size();
                 }
             });
             self.simulating.store(false, Ordering::SeqCst);
 
             // Keep track of thermalisation ratio.
-            let (th_ratio, thermalised) = self.th_ratio();
-            if i > 2 * self.th_block_size {
+            let (th_ratio, thermalised) = self.compute_burn_in_ratio();
+            if i > 2 * self.burn_in_desc.avg_block_size {
                 self.stats.thermalisation_ratio_history.push(th_ratio);
             }
 
             // Record statistics on every sweep.
-            self.record_stats();
+            self.record_stats()?;
 
             if self.stats.thermalised_at.is_none() && thermalised {
                 // System has thermalised, measurements can begin.
@@ -194,7 +189,7 @@ impl System {
     pub fn compute_full_action(&self) -> f64 {
         let mut action = 0.0;
         for i in 0..self.lattice.sweep_size() {
-            let a = self.spacing;
+            let a = self.lattice.spacing();
 
             let val = unsafe { *self.lattice[i].get() };
             let mut der_sum = 0.0;
@@ -228,11 +223,11 @@ impl System {
     /// and the direct neighbours can safely be read from.
     unsafe fn checkerboard_site_flip(&self, site: usize) -> f64 {
         let mut rng = rand::rng();
-        let a = self.spacing;
+        let a = self.lattice.spacing();
 
         let curr_val = unsafe { *self.lattice[site].get() };
 
-        let step_size = self.step_size();
+        let step_size = self.current_step_size();
         let new_val = rng.random_range((curr_val - step_size)..(curr_val + step_size));
 
         let mut curr_der_sum = 0.0;
@@ -276,7 +271,7 @@ impl System {
 
     fn get_timeslice(&mut self) -> Vec<f64> {
         // Compute the spatial sum for every time slice
-        let st = self.lattice.t_dim();
+        let st = self.lattice.dim_t();
 
         let mut sum_t = vec![0.0; st];
         for i in 0..self.lattice.sweep_size() {
@@ -296,60 +291,26 @@ impl System {
         &self.stats
     }
 
-    /// The lattice spacing.
-    pub fn spacing(&self) -> f64 {
-        self.spacing
-    }
-
-    /// The lower bound on the acceptance ratio.
-    pub fn lower_acceptance(&self) -> f64 {
-        self.lower_acceptance
-    }
-
-    /// The upper bound on the acceptance ratio.
-    pub fn upper_acceptance(&self) -> f64 {
-        self.upper_acceptance
-    }
-
-    pub fn step_size_correction_interval(&self) -> usize {
-        self.step_size_correction_interval
-    }
-
     /// The current thermalisation ratio threshold.
     /// 
     /// See [`SystemBuilder::th_threshold`] for more information.
     pub fn th_threshold(&self) -> f64 {
-        self.th_threshold
+        self.burn_in_desc.desired_ratio
+    }
+
+    pub fn current_step_size(&self) -> f64 {
+        self.current_step_size.load(Ordering::Relaxed)
     }
 
     /// The current thermalisation block size.
     /// 
     /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
     pub fn th_block_size(&self) -> usize {
-        self.th_block_size
+        self.burn_in_desc.avg_block_size
     }
 
     pub fn current_sweep(&self) -> usize {
         self.current_sweep
-    }
-
-    pub fn step_size(&self) -> f64 {
-        self.step_size.load(Ordering::Relaxed)
-    }
-
-    /// Sets the new step size. 
-    /// 
-    /// This function should usually not be called directly. Instead let the system
-    /// configure the step size by itself.
-    pub fn set_step_size(&self, value: f64) {
-        self.step_size.store(value, Ordering::Relaxed);
-    }
-
-    /// Gives the current step size correction.
-    /// 
-    /// See [`SystemBuilder::step_size_correction`](SystemBuilder::step_size_correction) for more information.
-    pub fn step_size_correction(&self) -> f64 {
-        self.step_size_correction
     }
 
     pub fn correlator2(&self) -> &[f64] {

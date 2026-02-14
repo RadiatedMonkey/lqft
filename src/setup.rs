@@ -19,7 +19,7 @@ impl System {
     /// `th_threshold`, the system will be marked as thermalised.
     /// 
     /// This function returns the current ratio and whether this ratio is considered thermalised.
-    pub fn th_ratio(&self) -> (f64, bool) {
+    pub fn compute_burn_in_ratio(&self) -> (f64, bool) {
         let bsize = self.th_block_size();
 
         let action_history = &self.stats().action_history;
@@ -45,16 +45,18 @@ impl System {
         let acceptance_ratio = self.stats.accepted_moves() as f64 / self.stats.total_moves() as f64;
 
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
-        if acceptance_ratio < self.lower_acceptance {
-            let correction = 1.0 - self.step_size_correction();
+        if acceptance_ratio < self.acceptance_desc.desired_range.start {
+            let correction = 1.0 - self.acceptance_desc.correction_size;
             let _ = self
-                .step_size
+                .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
-        } else if acceptance_ratio > self.upper_acceptance {
-            let correction = 1.0 + self.step_size_correction();
+
+        } else if acceptance_ratio > self.acceptance_desc.desired_range.end {
+            let correction = 1.0 + self.acceptance_desc.correction_size;
             let _ = self
-                .step_size
+                .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
+
         }
     }
 }
@@ -63,7 +65,59 @@ impl System {
 // SYSTEMBUILDER
 // ##########################################################################################################
 
+#[derive(Debug, Clone)]
+pub struct LatticeDesc {
+    pub initial_state: InitialState,
+    pub dimensions: [usize; 4],
+    pub spacing: f64
+}
+
+impl Default for LatticeDesc {
+    fn default() -> Self {
+        Self {
+            initial_state: InitialState::RandomRange(-0.5..0.5),
+            dimensions: [40, 20, 20, 20],
+            spacing: 1.0
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AcceptanceDesc {
+    pub desired_range: Range<f64>,
+    pub correction_size: f64,
+    pub correction_interval: usize,
+    pub initial_step_size: f64
+}
+
+impl Default for AcceptanceDesc {
+    fn default() -> Self {
+        Self {
+            desired_range: 0.3..0.5,
+            correction_size: 0.05,
+            correction_interval: 20_000,
+            initial_step_size: 1.0
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BurnInDesc {
+    pub avg_block_size: usize,
+    pub desired_ratio: f64
+}
+
+impl Default for BurnInDesc {
+    fn default() -> Self {
+        Self {
+            avg_block_size: 100,
+            desired_ratio: 0.1
+        }
+    }
+}
+
 /// The method of initialising the lattice.
+#[derive(Debug, Clone, PartialEq)]
 pub enum InitialState {
     /// Sets every lattice site to the same fixed value.
     Fixed(f64),
@@ -71,25 +125,39 @@ pub enum InitialState {
     RandomRange(Range<f64>),
 }
 
+/// The type of snapshots to take.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SnapshotType {
+    /// Store every `n` sweeps
+    Interval(usize),
+    /// Only store final sweep
+    Checkpoint
+}
+
+pub struct SnapshotDesc {
+    pub file: String,
+    pub ty: SnapshotType,
+    pub chunk_size: [usize; 4],
+    pub flush_method: FlushMethod
+}
+
+impl Default for SnapshotDesc {
+    fn default() -> Self {
+        Self {
+            file: "snapshots/snapshots.h5".to_owned(),
+            ty: SnapshotType::Checkpoint,
+            chunk_size: [16; 4],
+            flush_method: FlushMethod::Sequential
+        }
+    }
+}
+
 /// Used to configure a lattice simulation.
 pub struct SystemBuilder {
-    spacing: f64,
-    sizes: [usize; 4],
-    initial_state: InitialState,
-
-    initial_step_size: f64,
-    lower_acceptance: f64,
-    upper_acceptance: f64,
-    step_size_correction: f64,
-
-    acceptance_update_interval: usize,
-    thermalisation_threshold: f64,
-    thermalisation_block_size: usize,
-
-    snapshot_filename: Option<String>,
-    snapshot_chunk_size: [usize; 5],
-    snapshot_batch_size: usize,
-    snapshot_flush_method: FlushMethod,
+    lattice_desc: LatticeDesc,
+    acceptance_desc: AcceptanceDesc,
+    burn_in_desc: BurnInDesc,
+    snapshot: Option<SnapshotDesc>,
 
     mass_squared: f64,
     bare_coupling: f64,
@@ -98,122 +166,37 @@ pub struct SystemBuilder {
 impl SystemBuilder {
     pub fn new() -> Self {
         Self {
-            snapshot_filename: None,
-            snapshot_chunk_size: [1, 8, 8, 8, 8],
-            snapshot_batch_size: 10,
-            spacing: 1.0,
-            sizes: [40, 20, 20, 20],
-            initial_state: InitialState::Fixed(0.0),
-            initial_step_size: 1.0,
+            snapshot: None,
+            lattice_desc: LatticeDesc::default(),
             mass_squared: 1.0,
             bare_coupling: 0.0,
-            lower_acceptance: 0.3,
-            upper_acceptance: 0.5,
-            step_size_correction: 0.05,
-            thermalisation_threshold: 0.01,
-            thermalisation_block_size: 100,
-            acceptance_update_interval: 1000,
-            snapshot_flush_method: FlushMethod::Sequential,
+            acceptance_desc: AcceptanceDesc::default(),
+            burn_in_desc: BurnInDesc::default()
         }
     }
 
-    pub fn snapshot_filename<T: Into<String>>(mut self, filename: T) -> Self {
-        self.snapshot_filename = Some(filename.into());
+    pub fn enable_snapshot(mut self, desc: SnapshotDesc) -> Self {
+        self.snapshot = Some(desc);
         self
     }
 
-    pub fn snapshot_chunk_size<T: Into<[usize; 5]>>(mut self, size: T) -> Self {
-        self.snapshot_chunk_size = size.into();
+    pub fn disable_snapshot(mut self) -> Self {
+        self.snapshot = None;
         self
     }
 
-    pub fn snapshot_batch_size(mut self, size: usize) -> Self {
-        self.snapshot_batch_size = size;
+    pub fn with_burn_in(mut self, desc: BurnInDesc) -> Self {
+        self.burn_in_desc = desc;
         self
     }
 
-    /// Sets the change in step size for each correction.
-    /// 
-    /// If the system determines the acceptance ratio to be outside of the desired range,
-    /// it may increase or decrease the step size by this ratio.
-    /// 
-    /// Default value: `0.05`
-    pub fn step_size_correction(mut self, value: f64) -> Self {
-        self.step_size_correction = value;
+    pub fn with_acceptance(mut self, desc: AcceptanceDesc) -> Self {
+        self.acceptance_desc = desc;
         self
     }
 
-    /// Sets the lattice spacing.
-    /// 
-    /// Default value: `1.0`.
-    pub fn spacing(mut self, value: f64) -> Self {
-        self.spacing = value;
-        self
-    }
-
-    /// Sets the dimensions of the lattice.
-    /// 
-    /// These dimensions are in the format `[t, x, y, z]`.
-    /// 
-    /// Default value: `[40, 20, 20, 20]`
-    pub fn sizes(mut self, value: [usize; 4]) -> Self {
-        self.sizes = value;
-        self
-    }
-
-    /// Sets the initial state of the lattice.
-    /// 
-    /// The initial state can either be set to a constant value (for example `0.0` for a "cold start")
-    /// or a random range for a "hot start".
-    /// 
-    /// Default value: `LatticeInitialization::FixedValue(0.0)`.
-    pub fn initial_value(mut self, value: InitialState) -> Self {
-        self.initial_state = value;
-        self
-    }
-
-    /// The starting value of the step size.
-    /// 
-    /// This should be set around the optimal step size for the current configuration (if known).
-    /// If the initial step size is suboptimal, the system will automatically adjust it to reach the desired
-    /// acceptance ratio. This may however cause thermalisation to take longer.
-    /// 
-    /// Default value: `1.0`.
-    pub fn initial_step_size(mut self, value: f64) -> Self {
-        self.initial_step_size = value;
-        self
-    }
-
-    /// Sets the desired lower bound on the acceptance ratio. If the acceptance ratio goes below
-    /// this bound, the step size will be adjusted to correct this.
-    ///
-    /// Default value: `0.3`.
-    /// 
-    /// See [`step_size_decrease`](SimBuilder::step_size_decrease) and [`initial_step_size`](SimBuilder::initial_step_size) for more information.
-    pub fn lower_acceptance(mut self, ratio: f64) -> Self {
-        self.lower_acceptance = ratio;
-        self
-    }
-
-    /// Sets the desired upper bound on the acceptance ratio. If the acceptance ratio goes above
-    /// this bound, the step size will be adjusted to correct this.
-    /// 
-    /// Default value: `0.5`.
-    /// 
-    /// See [`step_size_increase`](SimBuilder::step_size_increase) and [`initial_step_size`](SimBuilder::initial_step_size) for more information.
-    pub fn upper_acceptance(mut self, ratio: f64) -> Self {
-        self.upper_acceptance = ratio;
-        self
-    }
-
-    /// Sets the amount of iterations before checking and correcting the step size.
-    /// 
-    /// Rather than correcting the step size every single iteration, the system checks it on a predetermined interval.
-    /// This is to improve performance since most times only a few corrections are needed to steer the system to the right acceptance ratio.
-    /// 
-    /// Default value: `1000`.
-    pub fn step_size_correction_interval(mut self, interval: usize) -> Self {
-        self.acceptance_update_interval = interval;
+    pub fn with_lattice(mut self, desc: LatticeDesc) -> Self {
+        self.lattice_desc = desc;
         self
     }
 
@@ -233,97 +216,51 @@ impl SystemBuilder {
     pub fn mass_squared(mut self, value: f64) -> Self {
         self.mass_squared = value;
         self
-    }   
-
-    /// Sets the thermalisation threshold. See [`th_ratio`](System::th_ratio) for more information on how thermalisation
-    /// works.
-    /// 
-    /// Default value: `0.01`.
-    pub fn th_threshold(mut self, value: f64) -> Self {
-        self.thermalisation_threshold = value;
-        self
-    }
-
-    /// Sets the thermalisation block size. See [`th_ratio`](System::th_ratio) for more information on how thermalisation
-    /// works.
-    /// 
-    /// Default value: `100`.
-    pub fn th_block_size(mut self, value: usize) -> Self {
-        self.thermalisation_block_size = value;
-        self
-    }
-
-    pub fn snapshot_flush_method(mut self, method: FlushMethod) -> Self {
-        self.snapshot_flush_method = method;
-        self
     }
 
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<System> {
-        let lattice = match self.initial_state {
-            InitialState::Fixed(val) => ScalarLattice4D::filled(self.sizes, val),
-            InitialState::RandomRange(range) => ScalarLattice4D::random(self.sizes, range),
-        };
+        let lattice = ScalarLattice4D::new(self.lattice_desc);
 
-        let snapshot = self.snapshot_filename.map(hdf5::File::append).transpose()?;
-        let dataset = snapshot.as_ref().map(|archive| {
+        let snapshot_state = self.snapshot.map(|desc| {
+            let snapshot = hdf5::File::append(&desc.file)?;
+
             let elapsed = UNIX_EPOCH.elapsed()?.as_secs();
-
             let [st, sx, sy, sz] = lattice.dimensions();
 
-            let settings = SystemSettings {
-                coupling: self.bare_coupling,
-                mass_squared: self.mass_squared,
-                spacing: self.spacing,
-                step_size: self.initial_step_size
-            };
+            let [ct, cx, cy, cz] = desc.chunk_size;
 
             let set_name = format!("data-{elapsed}");
-            let set = archive
+            let set = snapshot
                 .new_dataset::<f64>()
-                .chunk(self.snapshot_chunk_size)
+                .chunk([1, ct, cx, cy, cz])
                 .shape((1.., st, sx, sy, sz))
                 .shuffle()
                 .fletcher32()
                 .deflate(5)
                 .create(set_name.as_str())?;
 
-            let attr = set
-                .new_attr::<SystemSettings>()
-                .create("config")?;
-
-            attr.write_scalar(&settings)?;
-
             println!("Dataset {set_name} created");
 
-            Ok::<hdf5_metno::Dataset, anyhow::Error>(set)
+            Ok::<SnapshotState, anyhow::Error>(SnapshotState {
+                file: snapshot,
+                dataset: Arc::new(set),
+                desc,
+                tx: None,
+                thread: None
+            })
         }).transpose()?;
-
-        let snapshot_state = snapshot.map(|file| {
-            SnapshotState {
-                file, dataset: Arc::new(dataset.unwrap()),
-                chunk_size: self.snapshot_chunk_size,
-                batch_size: self.snapshot_batch_size,
-                tx: None, thread: None,
-                flush_method: self.snapshot_flush_method,
-            }
-        });
 
         let mut sim = System {
             simulating: AtomicBool::new(false),
             current_sweep: 0,
             lattice,
-            spacing: self.spacing,
-            step_size: AtomicF64::new(self.initial_step_size),
             mass_squared: self.mass_squared,
             coupling: self.bare_coupling,
-            lower_acceptance: self.lower_acceptance,
-            upper_acceptance: self.upper_acceptance,
-            step_size_correction: self.step_size_correction,
             stats: SystemStats::default(),
-            step_size_correction_interval: self.acceptance_update_interval,
-            th_block_size: self.thermalisation_block_size,
-            th_threshold: self.thermalisation_threshold,
+            current_step_size: AtomicF64::new(self.acceptance_desc.initial_step_size),
+            acceptance_desc: self.acceptance_desc,
+            burn_in_desc: self.burn_in_desc,
             correlation_slices: Vec::new(),
             measurement_interval: 50,
             snapshot_state
@@ -336,7 +273,16 @@ impl SystemBuilder {
 
         sim.stats.action_history.push(first_action);
 
-        sim.stats.snapshot_batch.reserve(self.snapshot_batch_size);
+        // Reserves capacity for batches in case flush method uses batching.
+        if let Some(SnapshotState { desc, .. }) = &sim.snapshot_state {
+            let SnapshotDesc {
+                flush_method, ..
+            } = desc;
+
+            if let FlushMethod::Batched(size) = flush_method {
+                sim.stats.snapshot_batch.reserve(*size);
+            }
+        }
 
         Ok(sim)
     }

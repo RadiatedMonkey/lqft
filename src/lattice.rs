@@ -3,7 +3,7 @@ use rand::Rng;
 use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::setup::{InitialState, LatticeDesc};
 
 pub struct AccessToken<'a> {
     lat: &'a ScalarLattice4D
@@ -17,13 +17,25 @@ impl<'a> Drop for AccessToken<'a> {
 
 pub struct ScalarLattice4D {
     pub(crate) sites: Vec<UnsafeCell<f64>>,
-    sizes: [usize; 4],
+    spacing: f64,
+    dimensions: [usize; 4],
 }
 
 unsafe impl Send for ScalarLattice4D {}
 unsafe impl Sync for ScalarLattice4D {}
 
 impl ScalarLattice4D {
+    pub fn new(desc: LatticeDesc) -> Self {
+        match desc.initial_state {
+            InitialState::Fixed(val) => ScalarLattice4D::filled(
+                desc.dimensions, desc.spacing, val
+            ),
+            InitialState::RandomRange(range) => ScalarLattice4D::random(
+                desc.dimensions, desc.spacing, range
+            ),
+        }
+    }
+
     pub unsafe fn clone(&self) -> Self {
         let orig = &self.sites;
         let mut cloned = Vec::with_capacity(orig.len());
@@ -39,18 +51,20 @@ impl ScalarLattice4D {
 
         Self {
             sites: cloned,
-            sizes: self.sizes
+            dimensions: self.dimensions,
+            spacing: self.spacing
         }
     }
 
+    /// Computes the amount of iterations that a single sweep consists of.
     pub fn sweep_size(&self) -> usize {
-        self.sizes.iter().product()
+        self.dimensions.iter().product()
     }
 
     /// Returns odd and even indices.
     pub fn generate_checkerboard(&self) -> (Vec<usize>, Vec<usize>) {
-        let [st, sx, sy, sz] = self.sizes;
-        let stotal: usize = self.sizes.iter().sum();
+        let [st, sx, sy, sz] = self.dimensions;
+        let stotal: usize = self.dimensions.iter().sum();
 
         let mut red = Vec::with_capacity(stotal / 2 + 1);
         let mut black = Vec::with_capacity(stotal / 2 + 1);
@@ -78,29 +92,33 @@ impl ScalarLattice4D {
         (red, black)
     }
 
+    pub fn spacing(&self) -> f64 {
+        self.spacing
+    }
+
     /// The dimensions of the lattice
     pub fn dimensions(&self) -> [usize; 4] {
-        self.sizes
+        self.dimensions
     }
 
     /// The size of the lattice in the `t` dimension.
-    pub fn t_dim(&self) -> usize {
-        self.sizes[0]
+    pub fn dim_t(&self) -> usize {
+        self.dimensions[0]
     }
 
     /// The size of the lattice in the `x` dimension.
-    pub fn x_dim(&self) -> usize {
-        self.sizes[1]
+    pub fn dim_x(&self) -> usize {
+        self.dimensions[1]
     }
 
     /// The size of the lattice in the `y` dimension.
-    pub fn y_dim(&self) -> usize {
-        self.sizes[2]
+    pub fn dim_y(&self) -> usize {
+        self.dimensions[2]
     }
 
     /// The size of the lattice in the `z` dimension.
-    pub fn z_dim(&self) -> usize {
-        self.sizes[3]
+    pub fn dim_z(&self) -> usize {
+        self.dimensions[3]
     }
 
     /// Computes the mean of the lattice
@@ -120,19 +138,19 @@ impl ScalarLattice4D {
         self.meansq() - self.mean().pow(2)
     }
 
-    pub fn filled(sizes: [usize; 4], fill_value: f64) -> Self {
-        let [t, x, y, z] = sizes;
+    pub fn filled(dimensions: [usize; 4], spacing: f64, fill_value: f64) -> Self {
+        let [t, x, y, z] = dimensions;
         let mut sites = Vec::with_capacity(t * x * y * z);
 
         for _ in 0..(t * x * y * z) {
             sites.push(UnsafeCell::new(fill_value));
         }
 
-        Self { sites, sizes }
+        Self { sites, spacing, dimensions }
     }
 
-    pub fn zeroed(sizes: [usize; 4]) -> Self {
-        let [t, x, y, z] = sizes;
+    pub fn zeroed(dimensions: [usize; 4], spacing: f64) -> Self {
+        let [t, x, y, z] = dimensions;
         println!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}");
 
         let mut sites = Vec::with_capacity(t * x * y * z);
@@ -142,14 +160,14 @@ impl ScalarLattice4D {
 
         println!("Generated zeroed scalar lattice");
 
-        Self { sites, sizes }
+        Self { sites, spacing, dimensions }
     }
 
-    pub fn random(sizes: [usize; 4], range: Range<f64>) -> Self {
-        let [t, x, y, z] = sizes;
+    pub fn random(dimensions: [usize; 4], spacing: f64, range: Range<f64>) -> Self {
+        let [t, x, y, z] = dimensions;
         println!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}");
 
-        let total_size = sizes.iter().product();
+        let total_size = dimensions.iter().product();
         let mut sites = Vec::with_capacity(total_size);
         let mut rng = rand::rng();
 
@@ -159,7 +177,7 @@ impl ScalarLattice4D {
 
         println!("Generated random scalar lattice");
 
-        Self { sites, sizes }
+        Self { sites, spacing, dimensions }
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
@@ -183,7 +201,7 @@ impl ScalarLattice4D {
     pub fn get_relative(&self, orig: [usize; 4], dir: [isize; 4]) -> [usize; 4] {
         let mut neighbor = [0; 4];
         for i in 0..4 {
-            let ni = (orig[i] as isize + dir[i]).rem_euclid(self.sizes[i] as isize) as usize;
+            let ni = (orig[i] as isize + dir[i]).rem_euclid(self.dimensions[i] as isize) as usize;
             neighbor[i] = ni;
         }
 
@@ -193,7 +211,7 @@ impl ScalarLattice4D {
     /// Converts a lattice coordinate to an index.
     /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
     pub fn to_index(&self, [t, x, y, z]: [usize; 4]) -> usize {
-        let [st, sx, sy, sz] = self.sizes;
+        let [st, sx, sy, sz] = self.dimensions;
 
         debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
         debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
@@ -205,7 +223,7 @@ impl ScalarLattice4D {
 
     /// Converts a lattice index to a coordinate
     pub fn from_index(&self, i: usize) -> [usize; 4] {
-        let [_, sx, sy, sz] = self.sizes;
+        let [_, sx, sy, sz] = self.dimensions;
         let z = i % sz;
 
         let rem = (i - z) / sz;
@@ -243,10 +261,10 @@ mod tests {
     /// Test whether coordinates are mapped to indices into the vector storage correctly.
     #[test]
     fn lattice_index_map_test() {
-        let sizes = [5, 7, 13, 22];
-        let lattice = ScalarLattice4D::zeroed(sizes);
+        let dimensions = [5, 7, 13, 22];
+        let lattice = ScalarLattice4D::zeroed(dimensions, 1.0);
 
-        for i in 0..sizes.iter().product() {
+        for i in 0..dimensions.iter().product() {
             let coords = lattice.from_index(i);
             let idx = lattice.to_index(coords);
 
@@ -261,10 +279,10 @@ mod tests {
     /// Test whether exceeding boundaries correctly wraps back to the other side of the lattice.
     #[test]
     fn lattice_boundary_wrap_test() {
-        let sizes = [5, 7, 13, 22];
-        let lattice = ScalarLattice4D::zeroed(sizes);
+        let dimensions = [5, 7, 13, 22];
+        let lattice = ScalarLattice4D::zeroed(dimensions, 1.0);
 
-        for (i, v) in sizes.iter().enumerate() {
+        for (i, v) in dimensions.iter().enumerate() {
             let mut start = [0; 4];
             start[i] = *v - 1;
 

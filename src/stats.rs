@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use atomic_float::AtomicF64;
+use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
 
@@ -62,30 +63,39 @@ impl System {
 
         self.stats.accepted_move_history.push(accept);
         self.stats.accept_ratio_history.push(ratio);
-        self.stats.step_size_history.push(self.step_size());
+        self.stats.step_size_history.push(self.current_step_size());
 
-        let sweep = SweepStats {
-            total_moves: total,
-            accepted_moves: accept,
-            accept_ratio: ratio,
-            step_size: self.step_size(),
-            mean,
-            meansq: 0.0,
-            action,
-            th_ratio: 0.0,
-            performed_measurements: 0,
-        };
-        
-        let fragment = SnapshotFragment {
-            lattice: unsafe { self.lattice.clone() },
-            stats: sweep
-        };
+        if let Some(snapshot) = &self.snapshot_state {
+            if let SnapshotType::Interval(interval) = snapshot.desc.ty {
+                // Check whether a snapshot should be saved
+                if total % interval == 0 {
+                    let sweep = SweepStats {
+                        total_moves: total,
+                        accepted_moves: accept,
+                        accept_ratio: ratio,
+                        step_size: self.current_step_size(),
+                        mean,
+                        meansq: 0.0,
+                        action,
+                        th_ratio: 0.0,
+                        performed_measurements: 0,
+                    };
 
-        if let Some(state) = &self.snapshot_state {
-            state.send_fragment(fragment)?;
+                    let fragment = SnapshotFragment {
+                        lattice: unsafe { self.lattice.clone() },
+                        stats: sweep
+                    };
+
+                    snapshot.send_fragment(fragment)?;
+                }
+            }
         }
 
         Ok(())
+    }
+
+    pub fn finalize_stats(&mut self) -> anyhow::Result<()> {
+        todo!()
     }
 }
 
