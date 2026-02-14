@@ -1,8 +1,8 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
-use atomic_float::AtomicF64;
 use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
+use atomic_float::AtomicF64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
 pub struct SystemStats {
@@ -30,7 +30,7 @@ pub struct SystemStats {
     pub thermalised_at: Option<usize>,
     /// The amount of measurements performed after thermalisation.
     pub performed_measurements: usize,
-    pub snapshot_batch: Vec<SnapshotFragment>
+    pub snapshot_batch: Vec<SnapshotFragment>,
 }
 
 /// The stats of the current sweep.
@@ -43,7 +43,7 @@ pub struct SweepStats {
     pub meansq: f64,
     pub action: f64,
     pub th_ratio: f64,
-    pub performed_measurements: usize
+    pub performed_measurements: usize,
 }
 
 impl System {
@@ -65,29 +65,29 @@ impl System {
         self.stats.accept_ratio_history.push(ratio);
         self.stats.step_size_history.push(self.current_step_size());
 
-        if let Some(snapshot) = &self.snapshot_state {
-            if let SnapshotType::Interval(interval) = snapshot.desc.ty {
-                // Check whether a snapshot should be saved
-                if total % interval == 0 {
-                    let sweep = SweepStats {
-                        total_moves: total,
-                        accepted_moves: accept,
-                        accept_ratio: ratio,
-                        step_size: self.current_step_size(),
-                        mean,
-                        meansq: 0.0,
-                        action,
-                        th_ratio: 0.0,
-                        performed_measurements: 0,
-                    };
+        if let Some(snapshot) = &self.snapshot_state
+            && let SnapshotType::Interval(interval) = snapshot.desc.ty
+        {
+            // Check whether a snapshot should be saved
+            if total.is_multiple_of(interval) {
+                let sweep = SweepStats {
+                    total_moves: total,
+                    accepted_moves: accept,
+                    accept_ratio: ratio,
+                    step_size: self.current_step_size(),
+                    mean,
+                    meansq: 0.0,
+                    action,
+                    th_ratio: 0.0,
+                    performed_measurements: 0,
+                };
 
-                    let fragment = SnapshotFragment {
-                        lattice: unsafe { self.lattice.clone() },
-                        stats: sweep
-                    };
+                let fragment = SnapshotFragment {
+                    lattice: unsafe { self.lattice.clone() },
+                    stats: sweep,
+                };
 
-                    snapshot.send_fragment(fragment)?;
-                }
+                snapshot.send_fragment(fragment)?;
             }
         }
 
@@ -144,7 +144,7 @@ impl Default for SystemStats {
             thermalisation_ratio_history: Vec::new(),
             thermalised_at: None,
             performed_measurements: 0,
-            snapshot_batch: Vec::new()
+            snapshot_batch: Vec::new(),
         }
     }
 }

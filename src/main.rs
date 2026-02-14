@@ -1,20 +1,22 @@
 mod lattice;
-mod sim;
-mod visual;
 mod setup;
+mod sim;
 mod snapshot;
 mod stats;
+mod visual;
 
-use std::time::UNIX_EPOCH;
-use plotters::prelude::*;
-use crate::setup::{AcceptanceDesc, BurnInDesc, InitialState, LatticeDesc, SnapshotDesc, SnapshotType, SystemBuilder};
-use crate::snapshot::FlushMethod;
-use crate::visual::{plot_observable, GraphData, GraphDesc};
+use crate::setup::{
+    AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeDesc, ParamDesc, SnapshotDesc,
+    SnapshotType, SystemBuilder,
+};
+use crate::visual::{GraphData, GraphDesc, plot_observable};
 
 fn main() -> anyhow::Result<()> {
     let mut sim = SystemBuilder::new()
-        .mass_squared(1.0)
-        .coupling(0.5)
+        .with_params(ParamDesc {
+            mass_squared: 1.0,
+            coupling: 0.5,
+        })
         .enable_snapshot(SnapshotDesc {
             file: "snapshots/snapshots.h5".to_string(),
             ty: SnapshotType::Checkpoint,
@@ -24,17 +26,17 @@ fn main() -> anyhow::Result<()> {
         .with_lattice(LatticeDesc {
             dimensions: [40, 20, 20, 20],
             initial_state: InitialState::RandomRange(-0.5..0.5),
-            spacing: 1.0
+            spacing: 1.0,
         })
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
             desired_range: 0.3..0.5,
-            correction_size: 0.05
+            correction_size: 0.05,
         })
         .with_burn_in(BurnInDesc {
-            avg_block_size: 10,
-            desired_ratio: 0.05
+            block_size: 10,
+            required_ratio: 0.05,
         })
         .build()?;
 
@@ -56,7 +58,9 @@ fn main() -> anyhow::Result<()> {
         .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
         .collect::<Vec<_>>();
 
-    let tdata = (0..sim.lattice().dimensions()[0]).map(|v| v as f64).collect::<Vec<_>>();
+    let tdata = (0..sim.lattice().dimensions()[0])
+        .map(|v| v as f64)
+        .collect::<Vec<_>>();
     // let corr2 = sim.correlator2();
 
     let desc = GraphDesc {
@@ -125,7 +129,10 @@ fn main() -> anyhow::Result<()> {
     };
     plot_observable(desc, &sim)?;
 
-    println!("System thermalised at sweep {:?}", sim.stats().thermalised_at);
+    println!(
+        "System thermalised at sweep {:?}",
+        sim.stats().thermalised_at
+    );
 
     Ok(())
 }

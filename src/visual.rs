@@ -1,7 +1,7 @@
-use std::ops::Range;
-use plotters::prelude::*;
 use crate::lattice::ScalarLattice4D;
 use crate::sim::System;
+use plotters::prelude::*;
+use std::ops::Range;
 
 pub fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
     let filename = format!("plots/step-{index}.png");
@@ -28,7 +28,8 @@ pub fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<(
         .label_style(("sans-serif", 20))
         .draw()?;
 
-    let grid = (0..lattice.dimensions()[3]).flat_map(|y| (0..lattice.dimensions()[2]).map(move |x| (x, y)));
+    let grid = (0..lattice.dimensions()[3])
+        .flat_map(|y| (0..lattice.dimensions()[2]).map(move |x| (x, y)));
     chart.draw_series(grid.map(|(y, z)| {
         let val = unsafe { *lattice[[0, 0, y, z]].get() };
         // Scale val from [-max, max] to [0, 1] for the color mapping
@@ -65,7 +66,7 @@ pub struct GraphData<'a> {
     pub ydata: &'a [f64],
     pub xlim: Range<f64>,
     pub ylim: Range<f64>,
-    pub description: &'a str
+    pub description: &'a str,
 }
 
 impl<'a> Default for GraphData<'a> {
@@ -77,7 +78,7 @@ impl<'a> Default for GraphData<'a> {
             ydata: &[],
             xlim: 0.0..0.0,
             ylim: 0.0..0.0,
-            description: ""
+            description: "",
         }
     }
 }
@@ -89,7 +90,7 @@ pub struct GraphDesc<'a, 'b> {
     pub layout: (usize, usize),
     /// The amount of samples to throw away. The initial samples usually generate extremely
     /// tall peaks obscuring the rest of the data.
-    pub burnin_time: usize
+    pub burnin_time: usize,
 }
 
 /// Custom function to find the smallest float in a slice since floats don't implement Eq.
@@ -112,7 +113,8 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
     let filename = format!("plots/{}", desc.file);
     let stats = sim.stats();
 
-    let root = BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
+    let root =
+        BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
     root.fill(&WHITE)?;
 
     let acceptance_range = &sim.acceptance_desc.desired_range;
@@ -120,19 +122,33 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
         format!("Lattice spacing: {:.2}", sim.lattice().spacing()),
         format!("Mass squared: {:.2}", sim.mass_squared()),
         format!("Coupling: {:.2}", sim.coupling()),
-        format!("Acceptance ratio target: {:.0}%-{:.0}%", acceptance_range.start * 100.0, acceptance_range.end * 100.0),
+        format!(
+            "Acceptance ratio target: {:.0}%-{:.0}%",
+            acceptance_range.start * 100.0,
+            acceptance_range.end * 100.0
+        ),
         format!("Action block size: {} sweeps", sim.th_block_size()),
         format!("Action block average threshold {}", sim.th_threshold()),
-        format!("Step size correction every {} iterations", sim.acceptance_desc.correction_interval),
+        format!(
+            "Step size correction every {} iterations",
+            sim.acceptance_desc.correction_interval
+        ),
         format!("A sweep is {} iterations", sim.lattice().sweep_size()),
-        format!("System reached equilibrium at sweep {}", stats.thermalised_at.map(|s| s.to_string()).unwrap_or("NA".to_owned())),
-        format!("Performed {} measurements", stats.performed_measurements)
+        format!(
+            "System reached equilibrium at sweep {}",
+            stats
+                .thermalised_at
+                .map(|s| s.to_string())
+                .unwrap_or("NA".to_owned())
+        ),
+        format!("Performed {} measurements", stats.performed_measurements),
     ];
 
     for (i, line) in lines.iter().enumerate() {
         root.draw_text(
-            line, &TextStyle::from(("sans-serif", 30)),
-            (50, 50 + 30 * i as i32)
+            line,
+            &TextStyle::from(("sans-serif", 30)),
+            (50, 50 + 30 * i as i32),
         )?;
     }
 
@@ -146,7 +162,7 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
         }
 
         let graph = opt.unwrap();
-        
+
         let xdata = &graph.xdata[desc.burnin_time..];
         let (xmin, xmax) = if graph.xlim.is_empty() {
             (find_min(xdata), find_max(xdata))
@@ -186,14 +202,15 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
             // Plot thermalisation point
             cc.draw_series(DashedLineSeries::new(
                 vec![(point as f64, ymin), (point as f64, ymax)],
-                2, 4,
+                2,
+                4,
                 ShapeStyle {
                     color: RED.mix(1.0),
                     filled: false,
-                    stroke_width: 1
-                }
+                    stroke_width: 1,
+                },
             ))?;
-        }   
+        }
     }
 
     root.present()?;

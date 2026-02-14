@@ -1,12 +1,12 @@
+use crate::setup::{InitialState, LatticeDesc};
 use num_traits::Pow;
 use rand::Rng;
 use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
-use crate::setup::{InitialState, LatticeDesc};
 
 pub struct AccessToken<'a> {
-    lat: &'a ScalarLattice4D
+    lat: &'a ScalarLattice4D,
 }
 
 impl<'a> Drop for AccessToken<'a> {
@@ -27,12 +27,10 @@ unsafe impl Sync for ScalarLattice4D {}
 impl ScalarLattice4D {
     pub fn new(desc: LatticeDesc) -> Self {
         match desc.initial_state {
-            InitialState::Fixed(val) => ScalarLattice4D::filled(
-                desc.dimensions, desc.spacing, val
-            ),
-            InitialState::RandomRange(range) => ScalarLattice4D::random(
-                desc.dimensions, desc.spacing, range
-            ),
+            InitialState::Fixed(val) => ScalarLattice4D::filled(desc.dimensions, desc.spacing, val),
+            InitialState::RandomRange(range) => {
+                ScalarLattice4D::random(desc.dimensions, desc.spacing, range)
+            }
         }
     }
 
@@ -41,18 +39,14 @@ impl ScalarLattice4D {
         let mut cloned = Vec::with_capacity(orig.len());
 
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                orig.as_ptr(),
-                cloned.as_mut_ptr(),
-                orig.len()
-            );
+            std::ptr::copy_nonoverlapping(orig.as_ptr(), cloned.as_mut_ptr(), orig.len());
             cloned.set_len(orig.len());
         }
 
         Self {
             sites: cloned,
             dimensions: self.dimensions,
-            spacing: self.spacing
+            spacing: self.spacing,
         }
     }
 
@@ -146,7 +140,11 @@ impl ScalarLattice4D {
             sites.push(UnsafeCell::new(fill_value));
         }
 
-        Self { sites, spacing, dimensions }
+        Self {
+            sites,
+            spacing,
+            dimensions,
+        }
     }
 
     pub fn zeroed(dimensions: [usize; 4], spacing: f64) -> Self {
@@ -160,7 +158,11 @@ impl ScalarLattice4D {
 
         println!("Generated zeroed scalar lattice");
 
-        Self { sites, spacing, dimensions }
+        Self {
+            sites,
+            spacing,
+            dimensions,
+        }
     }
 
     pub fn random(dimensions: [usize; 4], spacing: f64, range: Range<f64>) -> Self {
@@ -177,7 +179,11 @@ impl ScalarLattice4D {
 
         println!("Generated random scalar lattice");
 
-        Self { sites, spacing, dimensions }
+        Self {
+            sites,
+            spacing,
+            dimensions,
+        }
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.

@@ -1,21 +1,21 @@
 use crate::lattice::{AccessToken, ScalarLattice4D};
-use atomic_float::AtomicF64;
-use hdf5_metno::H5Type;
-use num_traits::Pow;
-use rand::Rng;
-use serde::Deserialize;
-use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::atomic::Ordering;
-use std::sync::mpsc;
-use std::thread;
-use std::thread::{JoinHandle, Thread};
-use rayon::prelude::*;
-use hdf5_metno as hdf5;
-use ndarray::ArrayView5;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotFragment, SnapshotState};
 use crate::stats::SystemStats;
+use atomic_float::AtomicF64;
+use hdf5_metno as hdf5;
+use hdf5_metno::H5Type;
+use ndarray::ArrayView5;
+use num_traits::Pow;
+use rand::Rng;
+use rayon::prelude::*;
+use serde::Deserialize;
+use serde::Serialize;
+use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::mpsc;
+use std::thread;
+use std::thread::{JoinHandle, Thread};
 
 /// Makes all struct fields public in the current and specified modules.
 /// This makes it easier to spread implementation details over multiple archive.
@@ -42,39 +42,47 @@ pub struct SystemSettings {
     pub spacing: f64,
     pub step_size: f64,
     pub mass_squared: f64,
-    pub coupling: f64
+    pub coupling: f64,
 }
 
 impl From<SystemSettings> for [f64; 4] {
     fn from(settings: SystemSettings) -> [f64; 4] {
-        [settings.spacing, settings.step_size, settings.mass_squared, settings.coupling]
+        [
+            settings.spacing,
+            settings.step_size,
+            settings.mass_squared,
+            settings.coupling,
+        ]
     }
 }
 
-all_public_in!(super, pub struct System {
-    /// Whether the lattice is currently in use by the checkerboard method.
-    /// If this is true, the system should not be read from.
-    simulating: AtomicBool,
+all_public_in!(
+    super,
+    pub struct System {
+        /// Whether the lattice is currently in use by the checkerboard method.
+        /// If this is true, the system should not be read from.
+        simulating: AtomicBool,
 
-    lattice: ScalarLattice4D,
+        lattice: ScalarLattice4D,
 
-    mass_squared: f64,
-    coupling: f64,
+        mass_squared: f64,
+        coupling: f64,
 
-    acceptance_desc: AcceptanceDesc,
-    burn_in_desc: BurnInDesc,
+        acceptance_desc: AcceptanceDesc,
+        burn_in_desc: BurnInDesc,
 
-    /// A vector for every possible C(t)
-    /// where the inner vector is for every sweep
-    correlation_slices: Vec<f64>,
-    measurement_interval: usize,
+        /// A vector for every possible C(t)
+        /// where the inner vector is for every sweep
+        correlation_slices: Vec<f64>,
+        measurement_interval: usize,
 
-    current_step_size: AtomicF64,
-    current_sweep: usize,
+        current_step_size: AtomicF64,
+        current_sweep: usize,
 
-    snapshot_state: Option<SnapshotState>,
-    stats: SystemStats,
-});
+        snapshot_state: Option<SnapshotState>,
+        stats: SystemStats,
+    }
+);
 
 impl System {
     /// Simulates the system using the checkerboard method.
@@ -97,7 +105,8 @@ impl System {
         }
 
         self.stats.reserve_capacity(total_sweeps);
-        self.correlation_slices.resize(self.lattice.dimensions()[0], 0.0);
+        self.correlation_slices
+            .resize(self.lattice.dimensions()[0], 0.0);
         let (red, black) = self.lattice.generate_checkerboard();
 
         println!("Simulating {total_sweeps} sweeps using checkerboard method...");
@@ -137,7 +146,7 @@ impl System {
 
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
-            if i > 2 * self.burn_in_desc.avg_block_size {
+            if i > 2 * self.burn_in_desc.block_size {
                 self.stats.thermalisation_ratio_history.push(th_ratio);
             }
 
@@ -167,8 +176,6 @@ impl System {
 
                 self.stats.performed_measurements += 1;
             }
-
-            println!("Sweep {i}/{total_sweeps}");
         }
 
         for t in 0..self.lattice.dimensions()[0] {
@@ -218,7 +225,7 @@ impl System {
     }
 
     /// Performs a single iteration and returns the new field value at the given site.
-    /// 
+    ///
     /// SAFETY: This method should only be called if the calling thread has exclusive access to the given site.
     /// and the direct neighbours can safely be read from.
     unsafe fn checkerboard_site_flip(&self, site: usize) -> f64 {
@@ -292,10 +299,10 @@ impl System {
     }
 
     /// The current thermalisation ratio threshold.
-    /// 
+    ///
     /// See [`SystemBuilder::th_threshold`] for more information.
     pub fn th_threshold(&self) -> f64 {
-        self.burn_in_desc.desired_ratio
+        self.burn_in_desc.required_ratio
     }
 
     pub fn current_step_size(&self) -> f64 {
@@ -303,10 +310,10 @@ impl System {
     }
 
     /// The current thermalisation block size.
-    /// 
+    ///
     /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
     pub fn th_block_size(&self) -> usize {
-        self.burn_in_desc.avg_block_size
+        self.burn_in_desc.block_size
     }
 
     pub fn current_sweep(&self) -> usize {
@@ -315,7 +322,7 @@ impl System {
 
     pub fn correlator2(&self) -> &[f64] {
         &self.correlation_slices
-    }   
+    }
 
     /// The current mass squared.
     pub fn mass_squared(&self) -> f64 {
@@ -333,7 +340,7 @@ impl System {
     }
 
     /// Whether the system has thermalised yet.
-    /// 
+    ///
     /// Once this returns true, the system is ready for measurement.
     pub fn thermalised(&self) -> bool {
         self.stats.thermalised_at.is_some()

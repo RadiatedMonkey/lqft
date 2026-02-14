@@ -1,28 +1,19 @@
-use std::sync::{mpsc, Arc};
+use crate::lattice::ScalarLattice4D;
+use crate::setup::{FlushMethod, SnapshotDesc};
+use crate::stats::SweepStats;
+use hdf5_metno as hdf5;
+use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Instant;
-use hdf5_metno as hdf5;
-use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
-use crate::lattice::ScalarLattice4D;
-use crate::setup::SnapshotDesc;
-use crate::stats::SweepStats;
-
-/// Which method to use for flushing snapshots fragments.
-#[derive(PartialEq, Copy, Clone)]
-pub enum FlushMethod {
-    /// Saves all fragments sequentially. This uses less RAM but is much slower.
-    Sequential,
-    /// Creates a batch of `n` sweeps and flushes them all at once.
-    Batched(usize)
-}
 
 /// A single snapshots fragment.
 ///
 /// This represents one sweep together with its statistics.
 pub struct SnapshotFragment {
     pub(crate) lattice: ScalarLattice4D,
-    pub(crate) stats: SweepStats
+    pub(crate) stats: SweepStats,
 }
 
 pub struct SnapshotState {
@@ -36,12 +27,18 @@ pub struct SnapshotState {
 struct JobDesc {
     dataset: Arc<hdf5::Dataset>,
     rx: mpsc::Receiver<SnapshotFragment>,
-    st: usize, sx: usize, sy: usize, sz: usize
+    st: usize,
+    sx: usize,
+    sy: usize,
+    sz: usize,
 }
 
 impl SnapshotState {
     pub fn send_fragment(&self, fragment: SnapshotFragment) -> anyhow::Result<()> {
-        let tx = self.tx.as_ref().ok_or_else(|| anyhow::anyhow!("Sender does not exist"))?;
+        let tx = self
+            .tx
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Sender does not exist"))?;
         tx.send(fragment)?;
 
         Ok(())
@@ -50,28 +47,34 @@ impl SnapshotState {
     fn sequential_job(desc: JobDesc) {
         let JobDesc {
             dataset,
-            rx, st, sx, sy, sz
+            rx,
+            st,
+            sx,
+            sy,
+            sz,
         } = desc;
 
         let mut fragment_counter = 0;
 
         while let Ok(fragment) = rx.recv() {
             let sites = &fragment.lattice.sites;
-            let raw_slice: &[f64] = unsafe {
-                std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len())
-            };
+            let raw_slice: &[f64] =
+                unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
 
-            let view = ArrayView5::from_shape(
-                (1, st, sx, sy, sz), raw_slice
-            );
+            let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice);
 
-            if let Err(err) = &view { eprintln!("Failed to create ArrayView5: {err}") }
+            if let Err(err) = &view {
+                eprintln!("Failed to create ArrayView5: {err}")
+            }
             let view = view.unwrap();
 
             let result = dataset.write_slice(
-                view, ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..]
+                view,
+                ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..],
             );
-            if let Err(err) = result { eprintln!("Failed to write snapshots fragment to disk: {err}") }
+            if let Err(err) = result {
+                eprintln!("Failed to write snapshots fragment to disk: {err}")
+            }
 
             println!("Flushed snapshots fragment {fragment_counter}");
 
@@ -83,7 +86,10 @@ impl SnapshotState {
         let JobDesc {
             dataset,
             rx,
-            st, sx, sy, sz,
+            st,
+            sx,
+            sy,
+            sz,
         } = desc;
 
         let mut buffer = Array5::<f64>::zeros((batch_size, st, sx, sy, sz));
@@ -92,23 +98,22 @@ impl SnapshotState {
         let mut batch_counter = 0;
         while let Ok(fragment) = rx.recv() {
             let sites = &fragment.lattice.sites;
-            let raw_slice: &[f64] = unsafe {
-                std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len())
-            };
+            let raw_slice: &[f64] =
+                unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
 
-            let mut subview = buffer.slice_mut(
-                ndarray::s![batch_counter, .., .., .., ..]
-            );
-            let incoming_view = ArrayView4::from_shape(
-                (st, sx, sy, sz), raw_slice
-            ).unwrap();
+            let mut subview = buffer.slice_mut(ndarray::s![batch_counter, .., .., .., ..]);
+            let incoming_view = ArrayView4::from_shape((st, sx, sy, sz), raw_slice).unwrap();
             subview.assign(&incoming_view);
 
             batch_counter += 1;
 
             if batch_counter >= batch_size {
                 let selection = ndarray::s![
-                    fragment_counter..fragment_counter + batch_counter, .., .., .., ..
+                    fragment_counter..fragment_counter + batch_counter,
+                    ..,
+                    ..,
+                    ..,
+                    ..
                 ];
 
                 if let Err(err) = dataset.write_slice(&buffer, selection) {
@@ -136,14 +141,18 @@ impl SnapshotState {
 
         let job_desc = JobDesc {
             dataset: Arc::clone(&self.dataset),
-            rx, st, sx, sy, sz
+            rx,
+            st,
+            sx,
+            sy,
+            sz,
         };
 
         let method = self.desc.flush_method;
         self.thread = Some(thread::spawn(move || {
             match method {
                 FlushMethod::Sequential => Self::sequential_job(job_desc),
-                FlushMethod::Batched(size) => Self::batch_job(job_desc, size)
+                FlushMethod::Batched(size) => Self::batch_job(job_desc, size),
             }
 
             println!("Snapshot thread exited");
@@ -153,7 +162,6 @@ impl SnapshotState {
 
         Ok(())
     }
-
 }
 
 impl Drop for SnapshotState {
