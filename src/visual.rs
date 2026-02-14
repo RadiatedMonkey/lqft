@@ -31,7 +31,6 @@ pub fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<(
     let grid = (0..lattice.dimensions()[3]).flat_map(|y| (0..lattice.dimensions()[2]).map(move |x| (x, y)));
     chart.draw_series(grid.map(|(y, z)| {
         let val = unsafe { *lattice[[0, 0, y, z]].get() };
-
         // Scale val from [-max, max] to [0, 1] for the color mapping
         // Assuming max fluctuation is around 2.0 based on your previous delta
         let max_scale = 2.0;

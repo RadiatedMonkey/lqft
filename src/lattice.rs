@@ -3,9 +3,20 @@ use rand::Rng;
 use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+pub struct AccessToken<'a> {
+    lat: &'a ScalarLattice4D
+}
+
+impl<'a> Drop for AccessToken<'a> {
+    fn drop(&mut self) {
+        todo!()
+    }
+}
 
 pub struct ScalarLattice4D {
-    pub sites: Vec<UnsafeCell<f64>>,
+    pub(crate) sites: Vec<UnsafeCell<f64>>,
     sizes: [usize; 4],
 }
 
@@ -13,6 +24,25 @@ unsafe impl Send for ScalarLattice4D {}
 unsafe impl Sync for ScalarLattice4D {}
 
 impl ScalarLattice4D {
+    pub unsafe fn clone(&self) -> Self {
+        let orig = &self.sites;
+        let mut cloned = Vec::with_capacity(orig.len());
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                orig.as_ptr(),
+                cloned.as_mut_ptr(),
+                orig.len()
+            );
+            cloned.set_len(orig.len());
+        }
+
+        Self {
+            sites: cloned,
+            sizes: self.sizes
+        }
+    }
+
     pub fn sweep_size(&self) -> usize {
         self.sizes.iter().product()
     }
@@ -80,9 +110,14 @@ impl ScalarLattice4D {
     }
 
     /// Computes the variance of the lattice
-    pub fn variance(&self) -> f64 {
+    pub fn meansq(&self) -> f64 {
         let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
         sum / self.sites.len() as f64
+    }
+
+    /// Computes the variance of the lattice.
+    pub fn variance(&self) -> f64 {
+        self.meansq() - self.mean().pow(2)
     }
 
     pub fn filled(sizes: [usize; 4], fill_value: f64) -> Self {

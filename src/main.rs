@@ -2,11 +2,13 @@ mod lattice;
 mod sim;
 mod visual;
 mod setup;
-mod store;
+mod snapshot;
+mod stats;
 
 use std::time::UNIX_EPOCH;
-use crate::sim::{InitialState, System, SystemBuilder};
 use plotters::prelude::*;
+use crate::setup::{InitialState, SystemBuilder};
+use crate::snapshot::FlushMethod;
 use crate::visual::{plot_observable, GraphData, GraphDesc};
 
 fn main() -> anyhow::Result<()> {
@@ -19,7 +21,10 @@ fn main() -> anyhow::Result<()> {
         .mass_squared(1.0)
         .coupling(0.5)
         .initial_value(InitialState::RandomRange(-0.5..0.5))
-        .archive_filename("archive/archive.hdf5")
+        .snapshot_filename("archive/archive.h5")
+        .snapshot_chunk_size([1, 40, 25, 25, 25])
+        .snapshot_flush_method(FlushMethod::Batched)
+        .snapshot_batch_size(10)
         .th_block_size(10)
         .th_threshold(0.005)
         .build()?;
@@ -27,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     visual::plot_lattice(0, sim.lattice())?;
 
     let total_sweeps = 50;
-    sim.simulate_checkerboard(total_sweeps);
+    sim.simulate_checkerboard(total_sweeps)?;
 
     println!("Printing lattice");
     visual::plot_lattice(1, sim.lattice())?;
