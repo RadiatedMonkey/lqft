@@ -3,6 +3,7 @@ use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 /// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
 pub struct SystemStats {
@@ -30,7 +31,8 @@ pub struct SystemStats {
     pub thermalised_at: Option<usize>,
     /// The amount of measurements performed after thermalisation.
     pub performed_measurements: usize,
-    pub snapshot_batch: Vec<SnapshotFragment>,
+    pub sweep_time_history: Vec<u128>,
+    pub stats_time_history: Vec<u128>
 }
 
 /// The stats of the current sweep.
@@ -44,11 +46,17 @@ pub struct SweepStats {
     pub action: f64,
     pub th_ratio: f64,
     pub performed_measurements: usize,
+    pub sweep_time: u128,
+    pub stats_time: u128
 }
 
 impl System {
     /// Records statistics on the current sweep.
-    pub(crate) fn record_stats(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn record_stats(
+        &mut self,
+        sweep_time: Duration, stat_timer: &Instant,
+        sweep: usize, total_sweeps: usize
+    ) -> anyhow::Result<()> {
         let mean = self.lattice.mean();
         let meansq = self.lattice.meansq();
         let action = self.stats.current_action.load(Ordering::Acquire);
@@ -64,12 +72,22 @@ impl System {
         self.stats.accepted_move_history.push(accept);
         self.stats.accept_ratio_history.push(ratio);
         self.stats.step_size_history.push(self.current_step_size());
+        self.stats.sweep_time_history.push(sweep_time.as_micros());
 
-        if let Some(snapshot) = &self.snapshot_state
-            && let SnapshotType::Interval(interval) = snapshot.desc.ty
-        {
-            // Check whether a snapshot should be saved
-            if total.is_multiple_of(interval) {
+        let mut stat_time_saved = false;
+
+        // Generate snapshot if snapshotting is enabled and an interval is passed *or* this is the
+        // last sweep.
+        if let Some(snapshot) = &self.snapshot_state {
+            let should_snapshot = match snapshot.desc.ty {
+                SnapshotType::Checkpoint => sweep == total_sweeps - 1,
+                SnapshotType::Interval(interval) => sweep == total_sweeps - 1 || sweep.is_multiple_of(interval),
+            };
+
+            if should_snapshot {
+                let clone = unsafe { self.lattice.clone() };
+
+                let stats_time = stat_timer.elapsed().as_millis();
                 let sweep = SweepStats {
                     total_moves: total,
                     accepted_moves: accept,
@@ -80,6 +98,8 @@ impl System {
                     action,
                     th_ratio: 0.0,
                     performed_measurements: 0,
+                    sweep_time: sweep_time.as_micros(),
+                    stats_time
                 };
 
                 let fragment = SnapshotFragment {
@@ -88,14 +108,18 @@ impl System {
                 };
 
                 snapshot.send_fragment(fragment)?;
+                self.stats.stats_time_history.push(stats_time);
+
+                stat_time_saved = true;
             }
         }
 
-        Ok(())
-    }
+        if !stat_time_saved {
+            let stats_time = stat_timer.elapsed().as_micros();
+            self.stats.stats_time_history.push(stats_time);
+        }
 
-    pub fn finalize_stats(&mut self) -> anyhow::Result<()> {
-        todo!()
+        Ok(())
     }
 }
 
@@ -111,6 +135,8 @@ impl SystemStats {
         self.meansq_history.reserve(count);
         self.action_history.reserve(count);
         self.thermalisation_ratio_history.reserve(count);
+        self.stats_time_history.reserve(count);
+        self.sweep_time_history.reserve(count);
     }
 
     /// The most recent value of the whole system action.
@@ -144,7 +170,8 @@ impl Default for SystemStats {
             thermalisation_ratio_history: Vec::new(),
             thermalised_at: None,
             performed_measurements: 0,
-            snapshot_batch: Vec::new(),
+            stats_time_history: Vec::new(),
+            sweep_time_history: Vec::new()
         }
     }
 }

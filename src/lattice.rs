@@ -5,20 +5,14 @@ use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
 
-pub struct AccessToken<'a> {
-    lat: &'a ScalarLattice4D,
-}
-
-impl<'a> Drop for AccessToken<'a> {
-    fn drop(&mut self) {
-        todo!()
-    }
-}
+/// 2 adjacent indices in each dimension.
+type AdjacentIndices = [usize; 8];
 
 pub struct ScalarLattice4D {
     pub(crate) sites: Vec<UnsafeCell<f64>>,
     spacing: f64,
     dimensions: [usize; 4],
+    adjacency: Vec<AdjacentIndices>
 }
 
 unsafe impl Send for ScalarLattice4D {}
@@ -47,6 +41,7 @@ impl ScalarLattice4D {
             sites: cloned,
             dimensions: self.dimensions,
             spacing: self.spacing,
+            adjacency: self.adjacency.clone()
         }
     }
 
@@ -63,7 +58,7 @@ impl ScalarLattice4D {
         let mut red = Vec::with_capacity(stotal / 2 + 1);
         let mut black = Vec::with_capacity(stotal / 2 + 1);
 
-        println!("Generating checkerboard indices...");
+        tracing::debug!("Generating checkerboard indices...");
 
         // Generate red indices
         for t in 0..st {
@@ -81,9 +76,33 @@ impl ScalarLattice4D {
             }
         }
 
-        println!("Checkerboard generated!");
+        tracing::debug!("Checkerboard generated!");
 
         (red, black)
+    }
+
+    /// Generates an adjacency table for the specified lattice.
+    fn generate_adjacency(&mut self) -> Vec<AdjacentIndices> {
+        let total_indices = self.sweep_size();
+        let mut table = Vec::with_capacity(total_indices);
+
+        for i in 0..total_indices {
+            let mut neighbors = [0; 8];
+
+            for j in 0..4 {
+                let fneigh = self.get_forward_neighbor(i, j);
+                let fneigh_index = self.to_index(fneigh);
+                neighbors[2 * j] = fneigh_index;
+
+                let bneigh = self.get_backward_neighbor(i, j);
+                let bneigh_index = self.to_index(bneigh);
+                neighbors[2 * j + 1] = bneigh_index;
+            }
+
+            table.push(neighbors);
+        }
+
+        table
     }
 
     pub fn spacing(&self) -> f64 {
@@ -140,34 +159,42 @@ impl ScalarLattice4D {
             sites.push(UnsafeCell::new(fill_value));
         }
 
-        Self {
+        let mut lattice = Self {
             sites,
             spacing,
             dimensions,
-        }
+            adjacency: Vec::new()
+        };
+        lattice.generate_adjacency();
+
+        lattice
     }
 
     pub fn zeroed(dimensions: [usize; 4], spacing: f64) -> Self {
         let [t, x, y, z] = dimensions;
-        println!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}");
+        tracing::debug!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}...");
 
         let mut sites = Vec::with_capacity(t * x * y * z);
         for _ in 0..(t * x * y * z) {
             sites.push(UnsafeCell::new(0.0));
         }
 
-        println!("Generated zeroed scalar lattice");
+        tracing::debug!("Generated zeroed scalar lattice");
 
-        Self {
+        let mut lattice = Self {
             sites,
             spacing,
             dimensions,
-        }
+            adjacency: Vec::new()
+        };
+        lattice.generate_adjacency();
+
+        lattice
     }
 
     pub fn random(dimensions: [usize; 4], spacing: f64, range: Range<f64>) -> Self {
         let [t, x, y, z] = dimensions;
-        println!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}");
+        tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
 
         let total_size = dimensions.iter().product();
         let mut sites = Vec::with_capacity(total_size);
@@ -177,29 +204,41 @@ impl ScalarLattice4D {
             sites.push(UnsafeCell::new(rng.random_range(range.clone())));
         }
 
-        println!("Generated random scalar lattice");
+        tracing::debug!("Generated random scalar lattice");
 
-        Self {
+        let mut lattice = Self {
             sites,
             spacing,
             dimensions,
-        }
+            adjacency: Vec::new()
+        };
+        lattice.generate_adjacency();
+
+        lattice
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
-    pub fn get_forward_neighbor(&self, orig: [usize; 4], dir: usize) -> [usize; 4] {
+    pub fn get_forward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
+        // if !self.adjacency.is_empty() {
+        //     return self.from_index(self.adjacency[orig][dir * 2])
+        // }
+
         let mut dir_vec = [0; 4];
         dir_vec[dir] = 1;
 
-        self.get_relative(orig, dir_vec)
+        self.get_relative(self.from_index(orig), dir_vec)
     }
 
     /// Gets the neighbor in the given backward direction. This implements wrapping of the boundaries.
-    pub fn get_backward_neighbor(&self, orig: [usize; 4], dir: usize) -> [usize; 4] {
+    pub fn get_backward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
+        // if !self.adjacency.is_empty() {
+        //     return self.from_index(self.adjacency[orig][dir * 2 + 1])
+        // }
+
         let mut dir_vec = [0; 4];
         dir_vec[dir] = -1;
 
-        self.get_relative(orig, dir_vec)
+        self.get_relative(self.from_index(orig), dir_vec)
     }
 
     /// Gets the coordinates of a site relative to the current one in the given direction. This is necessary to introduce

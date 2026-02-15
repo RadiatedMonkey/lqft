@@ -1,4 +1,4 @@
-use crate::lattice::{AccessToken, ScalarLattice4D};
+use crate::lattice::{ScalarLattice4D};
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotFragment, SnapshotState};
 use crate::stats::SystemStats;
@@ -13,9 +13,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::mpsc;
-use std::thread;
-use std::thread::{JoinHandle, Thread};
+use std::time::Instant;
 
 /// Makes all struct fields public in the current and specified modules.
 /// This makes it easier to spread implementation details over multiple archive.
@@ -109,9 +107,11 @@ impl System {
             .resize(self.lattice.dimensions()[0], 0.0);
         let (red, black) = self.lattice.generate_checkerboard();
 
-        println!("Simulating {total_sweeps} sweeps using checkerboard method...");
+        tracing::info!("Running {total_sweeps} sweeps...");
 
+        let mut sweep_timer = Instant::now();
         for i in 0..total_sweeps {
+            sweep_timer = Instant::now();
             self.current_sweep = i;
 
             // First update red sites....
@@ -144,14 +144,14 @@ impl System {
             });
             self.simulating.store(false, Ordering::SeqCst);
 
+            let sweep_time = sweep_timer.elapsed();
+            sweep_timer = Instant::now();
+
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
             if i > 2 * self.burn_in_desc.block_size {
                 self.stats.thermalisation_ratio_history.push(th_ratio);
             }
-
-            // Record statistics on every sweep.
-            self.record_stats()?;
 
             if self.stats.thermalised_at.is_none() && thermalised {
                 // System has thermalised, measurements can begin.
@@ -176,13 +176,16 @@ impl System {
 
                 self.stats.performed_measurements += 1;
             }
+
+            // Record statistics on every sweep.
+            self.record_stats(sweep_time, &sweep_timer, i, total_sweeps)?;
         }
 
         for t in 0..self.lattice.dimensions()[0] {
             self.correlation_slices[t] /= self.stats.performed_measurements as f64;
         }
 
-        println!("Checkerboard simulation completed");
+        tracing::info!("Run completed");
 
         Ok(())
     }
@@ -203,9 +206,9 @@ impl System {
 
             for j in 0..4 {
                 // TODO: Create prebuilt adjacency table
-                let orig = self.lattice.from_index(i);
-                let fneigh = self.lattice.get_forward_neighbor(orig, j);
-                let bneigh = self.lattice.get_backward_neighbor(orig, j);
+                // let orig = self.lattice.from_index(i);
+                let fneigh = self.lattice.get_forward_neighbor(i, j);
+                let bneigh = self.lattice.get_backward_neighbor(i, j);
 
                 // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
                 let fneigh_val = unsafe { *self.lattice[fneigh].get() };
@@ -241,10 +244,9 @@ impl System {
         let mut new_der_sum = 0.0;
 
         for i in 0..4 {
-            // TODO: Create prebuilt adjacency table
-            let orig = self.lattice.from_index(site);
-            let fneigh = self.lattice.get_forward_neighbor(orig, i);
-            let bneigh = self.lattice.get_backward_neighbor(orig, i);
+            // let orig = self.lattice.from_index(site);
+            let fneigh = self.lattice.get_forward_neighbor(site, i);
+            let bneigh = self.lattice.get_backward_neighbor(site, i);
 
             // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
             let fneigh_val = unsafe { *self.lattice[fneigh].get() };

@@ -1,5 +1,6 @@
+use std::ops::Div;
 use crate::lattice::ScalarLattice4D;
-use crate::setup::{FlushMethod, SnapshotDesc};
+use crate::setup::{FlushMethod, SnapshotDesc, SnapshotType};
 use crate::stats::SweepStats;
 use hdf5_metno as hdf5;
 use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
@@ -17,7 +18,7 @@ pub struct SnapshotFragment {
 }
 
 pub struct SnapshotState {
-    pub file: hdf5::File,
+    pub file: Option<hdf5::File>,
     pub dataset: Arc<hdf5::Dataset>,
     pub desc: SnapshotDesc,
     pub thread: Option<JoinHandle<()>>,
@@ -45,6 +46,8 @@ impl SnapshotState {
     }
 
     fn sequential_job(desc: JobDesc) {
+        tracing::info!("Initialised sequential snapshot flush thread");
+
         let JobDesc {
             dataset,
             rx,
@@ -57,6 +60,8 @@ impl SnapshotState {
         let mut fragment_counter = 0;
 
         while let Ok(fragment) = rx.recv() {
+            tracing::trace!("Snapshot fragment {fragment_counter} received");
+
             let sites = &fragment.lattice.sites;
             let raw_slice: &[f64] =
                 unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
@@ -64,7 +69,7 @@ impl SnapshotState {
             let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice);
 
             if let Err(err) = &view {
-                eprintln!("Failed to create ArrayView5: {err}")
+                tracing::error!("Failed to create ArrayView5: {err}")
             }
             let view = view.unwrap();
 
@@ -73,16 +78,18 @@ impl SnapshotState {
                 ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..],
             );
             if let Err(err) = result {
-                eprintln!("Failed to write snapshots fragment to disk: {err}")
+                tracing::error!("Failed to write snapshots fragment to disk: {err}")
             }
 
-            println!("Flushed snapshots fragment {fragment_counter}");
+            tracing::trace!("Flushed snapshots fragment {fragment_counter}");
 
             fragment_counter += 1;
         }
     }
 
     fn batch_job(desc: JobDesc, batch_size: usize) {
+        tracing::info!("Initialised snapshot batch flush thread");
+
         let JobDesc {
             dataset,
             rx,
@@ -117,10 +124,10 @@ impl SnapshotState {
                 ];
 
                 if let Err(err) = dataset.write_slice(&buffer, selection) {
-                    eprintln!("Failed to write snapshots batch: {err}");
+                    tracing::error!("Failed to write snapshots batch: {err}");
                 }
 
-                println!("Wrote {batch_counter} snapshots batch to disk");
+                tracing::trace!("Wrote {batch_counter} snapshots batch to disk");
 
                 fragment_counter += batch_size;
                 batch_counter = 0;
@@ -134,7 +141,12 @@ impl SnapshotState {
             anyhow::bail!("Another simulation is already running");
         }
 
-        self.dataset.resize([sweeps, st, sx, sy, sz])?;
+        let snapshot_count = match self.desc.ty {
+            SnapshotType::Interval(interval) => sweeps / interval,
+            SnapshotType::Checkpoint => 1
+        };
+
+        self.dataset.resize([snapshot_count, st, sx, sy, sz])?;
 
         let (tx, rx) = mpsc::channel();
         self.tx = Some(tx);
@@ -155,10 +167,10 @@ impl SnapshotState {
                 FlushMethod::Batched(size) => Self::batch_job(job_desc, size),
             }
 
-            println!("Snapshot thread exited");
+            tracing::info!("Snapshot flush thread exited");
         }));
 
-        println!("Snapshot state initialised");
+        tracing::info!("Snapshot state initialised");
 
         Ok(())
     }
@@ -168,17 +180,19 @@ impl Drop for SnapshotState {
     fn drop(&mut self) {
         // Drop sender to signal to thread.
         let _ = self.tx.take();
-        println!("Waiting for snapshots thread to shut down...");
+        tracing::info!("Waiting for snapshots thread to shut down...");
         let now = Instant::now();
         let _ = self.thread.take().map(JoinHandle::join);
         let elapsed = now.elapsed().as_millis();
-        println!("Time elapsed: {elapsed}");
+        tracing::trace!("Time elapsed: {elapsed}");
+
+        if let Err(err) = self.file.as_ref().unwrap().flush() {
+            tracing::error!("Failed to flush snapshot file: {err}");
+        }
+
+        if let Err(err) = self.file.take().unwrap().close() {
+            tracing::error!("Failed to close snapshot file: {err}");
+        }
+        tracing::info!("Snapshot file closed");
     }
-}
-
-/// Creates the HDF5 file and prepares it for storage.
-pub fn create_hdf5_file(filename: &str) -> anyhow::Result<hdf5::File> {
-    let file = hdf5::File::create(filename)?;
-
-    Ok(file)
 }

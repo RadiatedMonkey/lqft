@@ -238,9 +238,11 @@ impl Default for SnapshotDesc {
 /// Represents the physical properties of the system.
 ///
 /// These are the parameters of the theory such as the coupling constant and mass.
+#[derive(Debug, Clone)]
 pub struct ParamDesc {
     /// The coupling constant of the theory.
     pub coupling: f64,
+    /// The squared mass of the field.
     pub mass_squared: f64,
 }
 
@@ -254,6 +256,7 @@ impl Default for ParamDesc {
 }
 
 /// Used to configure a lattice simulation.
+#[derive(Debug, Clone)]
 pub struct SystemBuilder {
     param_desc: ParamDesc,
     lattice_desc: LatticeDesc,
@@ -326,6 +329,8 @@ impl SystemBuilder {
 
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<System> {
+        tracing::info!("Generating simulation with configuration: {self:?}");
+
         let lattice = ScalarLattice4D::new(self.lattice_desc);
 
         let snapshot_state = self
@@ -348,10 +353,10 @@ impl SystemBuilder {
                     .deflate(5)
                     .create(set_name.as_str())?;
 
-                println!("Dataset {set_name} created");
+                tracing::debug!("Dataset {set_name} created");
 
                 Ok::<SnapshotState, anyhow::Error>(SnapshotState {
-                    file: snapshot,
+                    file: Some(snapshot),
                     dataset: Arc::new(set),
                     desc,
                     tx: None,
@@ -382,14 +387,7 @@ impl SystemBuilder {
 
         sim.stats.action_history.push(first_action);
 
-        // Reserves capacity for batches in case flush method uses batching.
-        if let Some(SnapshotState { desc, .. }) = &sim.snapshot_state {
-            let SnapshotDesc { flush_method, .. } = desc;
-
-            if let FlushMethod::Batched(size) = flush_method {
-                sim.stats.snapshot_batch.reserve(*size);
-            }
-        }
+        tracing::info!("System initialised");
 
         Ok(sim)
     }

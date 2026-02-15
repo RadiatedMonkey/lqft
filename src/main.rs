@@ -12,6 +12,8 @@ use crate::setup::{
 use crate::visual::{GraphData, GraphDesc, plot_observable};
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
             mass_squared: 1.0,
@@ -35,14 +37,14 @@ fn main() -> anyhow::Result<()> {
             correction_size: 0.05,
         })
         .with_burn_in(BurnInDesc {
-            block_size: 10,
+            block_size: 25,
             required_ratio: 0.05,
         })
         .build()?;
 
     visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50;
+    let total_sweeps = 100;
     sim.simulate_checkerboard(total_sweeps)?;
 
     visual::plot_lattice(1, sim.lattice())?;
@@ -63,10 +65,13 @@ fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>();
     // let corr2 = sim.correlator2();
 
+    let stats_time_mapped = stats.stats_time_history.iter().map(|&t| t as f64).collect::<Vec<_>>();
+    let sweep_time_mapped = stats.sweep_time_history.iter().map(|&t| t as f64).collect::<Vec<_>>();
+
     let desc = GraphDesc {
-        dimensions: (2000, 2000),
+        dimensions: (3000, 3000),
         file: "layout.png",
-        layout: (3, 3),
+        layout: (4, 3),
         burnin_time: 0,
         graphs: &[
             GraphData {
@@ -113,6 +118,18 @@ fn main() -> anyhow::Result<()> {
                 ylim: 20.0..80.0,
                 ..Default::default()
             },
+            GraphData {
+                caption: "Statistics capture time",
+                xdata: &sweepx,
+                ydata: &stats_time_mapped,
+                ..Default::default()
+            },
+            GraphData {
+                caption: "Sweep process time",
+                xdata: &sweepx,
+                ydata: &sweep_time_mapped,
+                ..Default::default()
+            }
             // GraphData {
             //     caption: "2-point correlator",
             //     xdata: &tdata,
@@ -129,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     };
     plot_observable(desc, &sim)?;
 
-    println!(
+    tracing::info!(
         "System thermalised at sweep {:?}",
         sim.stats().thermalised_at
     );

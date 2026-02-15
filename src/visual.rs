@@ -54,7 +54,7 @@ pub fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<(
     }))?;
 
     root.present()?;
-    println!("Result has been saved to {filename}");
+    tracing::info!("Result has been saved to {filename}");
 
     Ok(())
 }
@@ -117,6 +117,9 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
         BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
     root.fill(&WHITE)?;
 
+    let avg_stats_capture_time = stats.stats_time_history.iter().map(|&t| t as f64).sum::<f64>() / stats.stats_time_history.len() as f64;
+    let avg_sweep_time = stats.sweep_time_history.iter().map(|&t| t as f64).sum::<f64>() / stats.sweep_time_history.len() as f64;
+
     let acceptance_range = &sim.acceptance_desc.desired_range;
     let lines = [
         format!("Lattice spacing: {:.2}", sim.lattice().spacing()),
@@ -142,6 +145,8 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
                 .unwrap_or("NA".to_owned())
         ),
         format!("Performed {} measurements", stats.performed_measurements),
+        format!("Average statistics capture time: {avg_stats_capture_time} microseconds"),
+        format!("Average sweep process time: {avg_sweep_time} microseconds")
     ];
 
     for (i, line) in lines.iter().enumerate() {
@@ -214,7 +219,7 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
     }
 
     root.present()?;
-    println!("Graph has been plotted in {filename}");
+    tracing::info!("Graph has been plotted in {filename}");
 
     Ok(())
 }
