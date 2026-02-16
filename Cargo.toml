@@ -11,9 +11,19 @@ indicatif = "0.18.4"
 ndarray = "0.17.2"
 num-traits = "0.2.19"
 plotters = "0.3.7"
-rand = "0.9.2"
+rand = "0.10.0"
+rand_xoshiro = "0.8.0"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+#lto = "fat"
+incremental = false
+codegen-units = 16

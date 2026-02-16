@@ -1,9 +1,9 @@
-use std::ops::Div;
-use crate::lattice::ScalarLattice4D;
+use crate::lattice::Lattice;
 use crate::setup::{FlushMethod, SnapshotDesc, SnapshotType};
 use crate::stats::SweepStats;
 use hdf5_metno as hdf5;
 use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
+use std::ops::Div;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
@@ -13,7 +13,7 @@ use std::time::Instant;
 ///
 /// This represents one sweep together with its statistics.
 pub struct SnapshotFragment {
-    pub(crate) lattice: ScalarLattice4D,
+    pub(crate) lattice: Lattice,
     pub(crate) stats: SweepStats,
 }
 
@@ -143,7 +143,7 @@ impl SnapshotState {
 
         let snapshot_count = match self.desc.ty {
             SnapshotType::Interval(interval) => sweeps / interval,
-            SnapshotType::Checkpoint => 1
+            SnapshotType::Checkpoint => 1,
         };
 
         self.dataset.resize([snapshot_count, st, sx, sy, sz])?;

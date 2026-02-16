@@ -1,9 +1,9 @@
-use crate::lattice::ScalarLattice4D;
+use crate::lattice::Lattice;
 use crate::sim::System;
 use plotters::prelude::*;
 use std::ops::Range;
 
-pub fn plot_lattice(index: usize, lattice: &ScalarLattice4D) -> anyhow::Result<()> {
+pub fn plot_lattice(index: usize, lattice: &Lattice) -> anyhow::Result<()> {
     let filename = format!("plots/step-{index}.png");
 
     let root = BitMapBackend::new(&filename, (750, 750)).into_drawing_area();
@@ -117,8 +117,18 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
         BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    let avg_stats_capture_time = stats.stats_time_history.iter().map(|&t| t as f64).sum::<f64>() / stats.stats_time_history.len() as f64;
-    let avg_sweep_time = stats.sweep_time_history.iter().map(|&t| t as f64).sum::<f64>() / stats.sweep_time_history.len() as f64;
+    let avg_stats_capture_time = stats
+        .stats_time_history
+        .iter()
+        .map(|&t| t as f64)
+        .sum::<f64>()
+        / stats.stats_time_history.len() as f64;
+    let avg_sweep_time = stats
+        .sweep_time_history
+        .iter()
+        .map(|&t| t as f64)
+        .sum::<f64>()
+        / stats.sweep_time_history.len() as f64;
 
     let acceptance_range = &sim.acceptance_desc.desired_range;
     let lines = [
@@ -146,7 +156,7 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
         ),
         format!("Performed {} measurements", stats.performed_measurements),
         format!("Average statistics capture time: {avg_stats_capture_time} microseconds"),
-        format!("Average sweep process time: {avg_sweep_time} microseconds")
+        format!("Average sweep process time: {avg_sweep_time} microseconds"),
     ];
 
     for (i, line) in lines.iter().enumerate() {

@@ -1,31 +1,135 @@
-use crate::setup::{InitialState, LatticeDesc};
+use crate::setup::{
+    InitialState, LatticeCreateDesc, LatticeDesc, LatticeLoadDesc, SnapshotLocation,
+};
+use anyhow::Context;
+use hdf5_metno as hdf5;
+use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
 use num_traits::Pow;
-use rand::Rng;
+use rand::{Rng, RngExt};
 use std::cell::UnsafeCell;
 use std::ops::Index;
 use std::ops::Range;
+use std::str::FromStr;
 
 /// 2 adjacent indices in each dimension.
 type AdjacentIndices = [usize; 8];
 
-pub struct ScalarLattice4D {
+pub struct Lattice {
     pub(crate) sites: Vec<UnsafeCell<f64>>,
     spacing: f64,
     dimensions: [usize; 4],
-    adjacency: Vec<AdjacentIndices>
+    adjacency: Vec<AdjacentIndices>,
 }
 
-unsafe impl Send for ScalarLattice4D {}
-unsafe impl Sync for ScalarLattice4D {}
+unsafe impl Send for Lattice {}
+unsafe impl Sync for Lattice {}
 
-impl ScalarLattice4D {
-    pub fn new(desc: LatticeDesc) -> Self {
+impl Lattice {
+    pub fn new(desc: LatticeCreateDesc) -> Self {
         match desc.initial_state {
-            InitialState::Fixed(val) => ScalarLattice4D::filled(desc.dimensions, desc.spacing, val),
+            InitialState::Fixed(val) => Lattice::filled(desc.dimensions, desc.spacing, val),
             InitialState::RandomRange(range) => {
-                ScalarLattice4D::random(desc.dimensions, desc.spacing, range)
+                Lattice::random(desc.dimensions, desc.spacing, range)
             }
         }
+    }
+
+    pub fn from_snapshot(desc: LatticeLoadDesc) -> anyhow::Result<Self> {
+        let file = hdf5::File::open(desc.hdf5_file).context("Unable to open snapshots file")?;
+
+        let set = match desc.location {
+            SnapshotLocation::Direct(loc) => file.dataset(&loc)?,
+            SnapshotLocation::Latest(group_name) => {
+                let group = file
+                    .group(&group_name)
+                    .context("Unable to find snapshot group")?;
+                let sets = group.datasets()?;
+
+                if sets.is_empty() {
+                    anyhow::bail!(
+                        "Unable to find latest snapshot, HDF5 group {group_name} is empty"
+                    )
+                }
+
+                let set = sets
+                    .iter()
+                    .max_by_key(|set| {
+                        let full_name = &set.name();
+                        if let Some(name) = full_name.split("/").last() {
+                            let res = u64::from_str(name);
+                            res.unwrap_or_else(|_| {
+                                tracing::warn!(
+                                    "Unable to parse snapshot name \"{name}\", ignoring it"
+                                );
+                                0
+                            })
+                        } else {
+                            tracing::warn!(
+                                "Unable to parse snapshot name \"{full_name}\", ignoring it"
+                            );
+                            0
+                        }
+                    })
+                    .unwrap();
+
+                tracing::info!("Loading dataset \"{}\"...", set.name());
+
+                set.clone()
+            }
+        };
+
+        let set_name = set.name();
+
+        let set_shape = set.shape();
+        let ndim = set_shape.len();
+        if ndim != 5 {
+            anyhow::bail!(
+                "Unable to load snapshot \"{set_name}\", dataspace has {ndim} != 5 dimensions"
+            )
+        }
+
+        let latest_idx = set_shape[0] - 1;
+        let selection = ndarray::s![latest_idx..latest_idx + 1, .., .., .., ..];
+
+        let raw_slice: Array5<f64> = set
+            .read_slice(selection)
+            .context("Unable to read dataset")?;
+        let raw_sites: ArrayView4<f64> = raw_slice.slice(ndarray::s![0, .., .., .., ..]);
+
+        let lattice = Lattice::from_view(raw_sites, desc.spacing);
+        tracing::info!(
+            "Loaded lattice of dimensions {} x {} x {} x {} from file \"{}\"",
+            set_shape[1],
+            set_shape[2],
+            set_shape[3],
+            set_shape[4],
+            set_name
+        );
+
+        file.close()?;
+
+        Ok(lattice)
+    }
+
+    pub fn from_view(view: ArrayView4<f64>, spacing: f64) -> Self {
+        let dimensions: (usize, usize, usize, usize) = view.dim();
+        let dimensions: [usize; 4] = dimensions.into();
+
+        let slice = view.as_slice().unwrap();
+        let sites = slice
+            .iter()
+            .map(|&s| UnsafeCell::new(s))
+            .collect::<Vec<_>>();
+
+        let mut lattice = Lattice {
+            sites,
+            adjacency: Vec::new(),
+            dimensions,
+            spacing,
+        };
+
+        lattice.generate_adjacency();
+        lattice
     }
 
     pub unsafe fn clone(&self) -> Self {
@@ -41,7 +145,7 @@ impl ScalarLattice4D {
             sites: cloned,
             dimensions: self.dimensions,
             spacing: self.spacing,
-            adjacency: self.adjacency.clone()
+            adjacency: self.adjacency.clone(),
         }
     }
 
@@ -163,7 +267,7 @@ impl ScalarLattice4D {
             sites,
             spacing,
             dimensions,
-            adjacency: Vec::new()
+            adjacency: Vec::new(),
         };
         lattice.generate_adjacency();
 
@@ -185,7 +289,7 @@ impl ScalarLattice4D {
             sites,
             spacing,
             dimensions,
-            adjacency: Vec::new()
+            adjacency: Vec::new(),
         };
         lattice.generate_adjacency();
 
@@ -210,7 +314,7 @@ impl ScalarLattice4D {
             sites,
             spacing,
             dimensions,
-            adjacency: Vec::new()
+            adjacency: Vec::new(),
         };
         lattice.generate_adjacency();
 
@@ -283,7 +387,7 @@ impl ScalarLattice4D {
     }
 }
 
-impl Index<usize> for ScalarLattice4D {
+impl Index<usize> for Lattice {
     type Output = UnsafeCell<f64>;
 
     fn index(&self, i: usize) -> &Self::Output {
@@ -291,7 +395,7 @@ impl Index<usize> for ScalarLattice4D {
     }
 }
 
-impl Index<[usize; 4]> for ScalarLattice4D {
+impl Index<[usize; 4]> for Lattice {
     type Output = UnsafeCell<f64>;
 
     fn index(&self, pos: [usize; 4]) -> &Self::Output {
@@ -307,7 +411,7 @@ mod tests {
     #[test]
     fn lattice_index_map_test() {
         let dimensions = [5, 7, 13, 22];
-        let lattice = ScalarLattice4D::zeroed(dimensions, 1.0);
+        let lattice = Lattice::zeroed(dimensions, 1.0);
 
         for i in 0..dimensions.iter().product() {
             let coords = lattice.from_index(i);
@@ -325,7 +429,7 @@ mod tests {
     #[test]
     fn lattice_boundary_wrap_test() {
         let dimensions = [5, 7, 13, 22];
-        let lattice = ScalarLattice4D::zeroed(dimensions, 1.0);
+        let lattice = Lattice::zeroed(dimensions, 1.0);
 
         for (i, v) in dimensions.iter().enumerate() {
             let mut start = [0; 4];

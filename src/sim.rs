@@ -1,4 +1,4 @@
-use crate::lattice::{ScalarLattice4D};
+use crate::lattice::Lattice;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotFragment, SnapshotState};
 use crate::stats::SystemStats;
@@ -8,9 +8,12 @@ use hdf5_metno::H5Type;
 use ndarray::ArrayView5;
 use num_traits::Pow;
 use rand::Rng;
+use rand_xoshiro::rand_core::SeedableRng;
+use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
@@ -61,7 +64,7 @@ all_public_in!(
         /// If this is true, the system should not be read from.
         simulating: AtomicBool,
 
-        lattice: ScalarLattice4D,
+        lattice: Lattice,
 
         mass_squared: f64,
         coupling: f64,
@@ -89,7 +92,7 @@ impl System {
     /// Since many QFTs interact with direct neighbours only, this allows all sites of a single colour to be updated
     /// simultaneously rather than sequentially.
     ///
-    /// We first divide the lattice into a colours using [`generate_checkerboard`](ScalarLattice4D::generate_checkerboard).
+    /// We first divide the lattice into a colours using [`generate_checkerboard`](Lattice::generate_checkerboard).
     /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
     /// using the Metropolis algorithm.
     ///
@@ -110,38 +113,60 @@ impl System {
         tracing::info!("Running {total_sweeps} sweeps...");
 
         let mut sweep_timer = Instant::now();
+
+        let mut seed_rng = rand::rng();
+        let mut rng = Xoshiro256PlusPlus::from_rng(&mut seed_rng);
+
         for i in 0..total_sweeps {
             sweep_timer = Instant::now();
             self.current_sweep = i;
 
             // First update red sites....
             self.simulating.store(true, Ordering::SeqCst);
-            red.par_iter().for_each(|&index| {
-                // SAFETY: Since this is a red site, this thread has exclusive access to the site.
-                // Therefore it can safely update the value.
-                unsafe {
-                    let new_site = self.checkerboard_site_flip(index);
-                    *self.lattice[index].get() = new_site;
-                };
+            red.par_iter().for_each_init(
+                || {
+                    let mut seed_rng = rand::rng();
+                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
 
-                if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised() {
-                    self.correct_step_size();
-                }
-            });
+                    // rand::rng()
+                },
+                |rng, &index| {
+                    // SAFETY: Since this is a red site, this thread has exclusive access to the site.
+                    // Therefore it can safely update the value.
+                    unsafe {
+                        let new_site = self.checkerboard_site_flip(rng, index);
+                        *self.lattice[index].get() = new_site;
+                    };
+
+                    if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
+                    {
+                        self.correct_step_size();
+                    }
+                },
+            );
 
             // then black sites.
-            black.par_iter().for_each(|&index| {
-                // SAFETY: Since this is a black site, this thread has exclusive access to the site.
-                // Therefore it can safely update the value.
-                unsafe {
-                    let new_site = self.checkerboard_site_flip(index);
-                    *self.lattice[index].get() = new_site;
-                }
+            black.par_iter().for_each_init(
+                || {
+                    let mut seed_rng = rand::rng();
+                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
 
-                if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised() {
-                    self.correct_step_size();
-                }
-            });
+                    // rand::rng()
+                },
+                |rng, &index| {
+                    // SAFETY: Since this is a black site, this thread has exclusive access to the site.
+                    // Therefore it can safely update the value.
+                    unsafe {
+                        let new_site = self.checkerboard_site_flip(rng, index);
+                        *self.lattice[index].get() = new_site;
+                    }
+
+                    if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
+                    {
+                        self.correct_step_size();
+                    }
+                },
+            );
             self.simulating.store(false, Ordering::SeqCst);
 
             let sweep_time = sweep_timer.elapsed();
@@ -227,18 +252,25 @@ impl System {
         action
     }
 
+    fn random_range<R: rand_core::Rng>(rng: &mut R, range: Range<f64>) -> f64 {
+        let rand_full = rng.next_u64() as f64;
+        let rand_unit = rand_full / (u64::MAX as f64 + 1.0);
+
+        range.start + (rand_unit * (range.end - range.start))
+    }
+
     /// Performs a single iteration and returns the new field value at the given site.
     ///
     /// SAFETY: This method should only be called if the calling thread has exclusive access to the given site.
     /// and the direct neighbours can safely be read from.
-    unsafe fn checkerboard_site_flip(&self, site: usize) -> f64 {
-        let mut rng = rand::rng();
+    #[inline(always)]
+    unsafe fn checkerboard_site_flip<R: rand_core::Rng>(&self, rng: &mut R, site: usize) -> f64 {
         let a = self.lattice.spacing();
 
         let curr_val = unsafe { *self.lattice[site].get() };
 
         let step_size = self.current_step_size();
-        let new_val = rng.random_range((curr_val - step_size)..(curr_val + step_size));
+        let new_val = Self::random_range(rng, (curr_val - step_size)..(curr_val + step_size));
 
         let mut curr_der_sum = 0.0;
         let mut new_der_sum = 0.0;
@@ -264,7 +296,7 @@ impl System {
 
         let total_delta: f64 = a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
         let accept_prob = (-total_delta).exp();
-        let realised = rng.random_range(0.0..1.0);
+        let realised = Self::random_range(rng, 0.0..1.0);
 
         self.stats.total_moves.fetch_add(1, Ordering::Relaxed);
         if realised < accept_prob {
@@ -337,7 +369,7 @@ impl System {
     }
 
     /// The internal lattice used for data storage.
-    pub fn lattice(&self) -> &ScalarLattice4D {
+    pub fn lattice(&self) -> &Lattice {
         &self.lattice
     }
 

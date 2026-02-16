@@ -1,4 +1,5 @@
 mod lattice;
+mod measure;
 mod setup;
 mod sim;
 mod snapshot;
@@ -6,12 +7,22 @@ mod stats;
 mod visual;
 
 use crate::setup::{
-    AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeDesc, ParamDesc, SnapshotDesc,
-    SnapshotType, SystemBuilder,
+    AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc,
+    LatticeLoadDesc, ParamDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder,
 };
 use crate::visual::{GraphData, GraphDesc, plot_observable};
+use std::process::ExitCode;
 
-fn main() -> anyhow::Result<()> {
+fn main() -> ExitCode {
+    if let Err(err) = app() {
+        tracing::error!("Simulation did not exit correctly: {err:?}");
+        return ExitCode::FAILURE;
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn app() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let mut sim = SystemBuilder::new()
@@ -25,11 +36,16 @@ fn main() -> anyhow::Result<()> {
             chunk_size: [16; 4],
             flush_method: FlushMethod::Sequential,
         })
-        .with_lattice(LatticeDesc {
-            dimensions: [40, 20, 20, 20],
-            initial_state: InitialState::RandomRange(-0.5..0.5),
+        // .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
+        //     dimensions: [40, 20, 20, 20],
+        //     initial_state: InitialState::RandomRange(-0.5..0.5),
+        //     spacing: 1.0,
+        // }))
+        .with_lattice(LatticeDesc::Load(LatticeLoadDesc {
+            hdf5_file: String::from("snapshots/snapshots.h5"),
+            location: SnapshotLocation::Latest(String::from("snapshots")),
             spacing: 1.0,
-        })
+        }))
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
@@ -65,8 +81,16 @@ fn main() -> anyhow::Result<()> {
         .collect::<Vec<_>>();
     // let corr2 = sim.correlator2();
 
-    let stats_time_mapped = stats.stats_time_history.iter().map(|&t| t as f64).collect::<Vec<_>>();
-    let sweep_time_mapped = stats.sweep_time_history.iter().map(|&t| t as f64).collect::<Vec<_>>();
+    let stats_time_mapped = stats
+        .stats_time_history
+        .iter()
+        .map(|&t| t as f64)
+        .collect::<Vec<_>>();
+    let sweep_time_mapped = stats
+        .sweep_time_history
+        .iter()
+        .map(|&t| t as f64)
+        .collect::<Vec<_>>();
 
     let desc = GraphDesc {
         dimensions: (3000, 3000),
@@ -129,19 +153,18 @@ fn main() -> anyhow::Result<()> {
                 xdata: &sweepx,
                 ydata: &sweep_time_mapped,
                 ..Default::default()
-            }
-            // GraphData {
-            //     caption: "2-point correlator",
-            //     xdata: &tdata,
-            //     ydata: sim.correlator2(),
-            //     ..Default::default()
-            // }, // FIXME: Correlator2 seems to be filled with NaNs
-            // GraphData {
-            //     caption: "2-point Function",
-            //     xdata: &tdata,
-            //     ydata: &corr2,
-            //     ..Default::default()
-            // }
+            }, // GraphData {
+               //     caption: "2-point correlator",
+               //     xdata: &tdata,
+               //     ydata: sim.correlator2(),
+               //     ..Default::default()
+               // }, // FIXME: Correlator2 seems to be filled with NaNs
+               // GraphData {
+               //     caption: "2-point Function",
+               //     xdata: &tdata,
+               //     ydata: &corr2,
+               //     ..Default::default()
+               // }
         ],
     };
     plot_observable(desc, &sim)?;

@@ -32,7 +32,7 @@ pub struct SystemStats {
     /// The amount of measurements performed after thermalisation.
     pub performed_measurements: usize,
     pub sweep_time_history: Vec<u128>,
-    pub stats_time_history: Vec<u128>
+    pub stats_time_history: Vec<u128>,
 }
 
 /// The stats of the current sweep.
@@ -47,15 +47,17 @@ pub struct SweepStats {
     pub th_ratio: f64,
     pub performed_measurements: usize,
     pub sweep_time: u128,
-    pub stats_time: u128
+    pub stats_time: u128,
 }
 
 impl System {
     /// Records statistics on the current sweep.
     pub(crate) fn record_stats(
         &mut self,
-        sweep_time: Duration, stat_timer: &Instant,
-        sweep: usize, total_sweeps: usize
+        sweep_time: Duration,
+        stat_timer: &Instant,
+        sweep: usize,
+        total_sweeps: usize,
     ) -> anyhow::Result<()> {
         let mean = self.lattice.mean();
         let meansq = self.lattice.meansq();
@@ -81,10 +83,16 @@ impl System {
         if let Some(snapshot) = &self.snapshot_state {
             let should_snapshot = match snapshot.desc.ty {
                 SnapshotType::Checkpoint => sweep == total_sweeps - 1,
-                SnapshotType::Interval(interval) => sweep == total_sweeps - 1 || sweep.is_multiple_of(interval),
+                SnapshotType::Interval(interval) => {
+                    sweep == total_sweeps - 1 || sweep.is_multiple_of(interval)
+                }
             };
 
             if should_snapshot {
+                if sweep == total_sweeps - 1 {
+                    tracing::info!("Last sweep avg is: {}", self.lattice.mean());
+                }
+
                 let clone = unsafe { self.lattice.clone() };
 
                 let stats_time = stat_timer.elapsed().as_millis();
@@ -99,11 +107,11 @@ impl System {
                     th_ratio: 0.0,
                     performed_measurements: 0,
                     sweep_time: sweep_time.as_micros(),
-                    stats_time
+                    stats_time,
                 };
 
                 let fragment = SnapshotFragment {
-                    lattice: unsafe { self.lattice.clone() },
+                    lattice: clone,
                     stats: sweep,
                 };
 
@@ -171,7 +179,7 @@ impl Default for SystemStats {
             thermalised_at: None,
             performed_measurements: 0,
             stats_time_history: Vec::new(),
-            sweep_time_history: Vec::new()
+            sweep_time_history: Vec::new(),
         }
     }
 }

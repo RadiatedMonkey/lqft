@@ -1,14 +1,14 @@
 //! Functionality related to initialisation of the system
 
+use crate::snapshot::SnapshotState;
+use crate::stats::SystemStats;
+use crate::{lattice::Lattice, sim::System};
+use anyhow::Context;
 use atomic_float::AtomicF64;
 use hdf5_metno as hdf5;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
-
-use crate::snapshot::SnapshotState;
-use crate::stats::SystemStats;
-use crate::{lattice::ScalarLattice4D, sim::System};
 
 impl System {
     /// Determines whether thermalisation of the system has finished.
@@ -76,7 +76,7 @@ pub enum FlushMethod {
 
 /// Configures the lattice.
 #[derive(Debug, Clone)]
-pub struct LatticeDesc {
+pub struct LatticeCreateDesc {
     /// The initial state of the lattice.
     ///
     /// This sets the initial conditions of the system.
@@ -93,7 +93,7 @@ pub struct LatticeDesc {
     pub spacing: f64,
 }
 
-impl Default for LatticeDesc {
+impl Default for LatticeCreateDesc {
     fn default() -> Self {
         Self {
             initial_state: InitialState::RandomRange(-0.5..0.5),
@@ -101,6 +101,37 @@ impl Default for LatticeDesc {
             spacing: 1.0,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum SnapshotLocation {
+    /// A direct link to a specific snapshot.
+    Direct(String),
+    /// Loads the latest snapshot in the given group.
+    Latest(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct LatticeLoadDesc {
+    pub hdf5_file: String,
+    pub location: SnapshotLocation,
+    pub spacing: f64,
+}
+
+impl Default for LatticeLoadDesc {
+    fn default() -> Self {
+        Self {
+            hdf5_file: String::from("snapshots/snapshots.h5"),
+            location: SnapshotLocation::Latest(String::from("snapshots")),
+            spacing: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum LatticeDesc {
+    Load(LatticeLoadDesc),
+    Create(LatticeCreateDesc),
 }
 
 /// Controls how the system reaches the desired acceptance ratio.
@@ -270,7 +301,7 @@ impl SystemBuilder {
     pub fn new() -> Self {
         Self {
             snapshot: None,
-            lattice_desc: LatticeDesc::default(),
+            lattice_desc: LatticeDesc::Create(LatticeCreateDesc::default()),
             param_desc: ParamDesc::default(),
             acceptance_desc: AcceptanceDesc::default(),
             burn_in_desc: BurnInDesc::default(),
@@ -331,20 +362,30 @@ impl SystemBuilder {
     pub fn build(self) -> anyhow::Result<System> {
         tracing::info!("Generating simulation with configuration: {self:?}");
 
-        let lattice = ScalarLattice4D::new(self.lattice_desc);
+        let lattice = match self.lattice_desc {
+            LatticeDesc::Create(desc) => Lattice::new(desc),
+            LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot)?,
+        };
 
         let snapshot_state = self
             .snapshot
             .map(|desc| {
-                let snapshot = hdf5::File::append(&desc.file)?;
+                let snapshot =
+                    hdf5::File::append(&desc.file).context("Unable to open snapshots file")?;
+                let snapshot_group = match snapshot.group("snapshots") {
+                    Ok(group) => group,
+                    Err(_) => snapshot
+                        .create_group("snapshots")
+                        .context("Unable to create /snapshots group")?,
+                };
 
                 let elapsed = UNIX_EPOCH.elapsed()?.as_secs();
                 let [st, sx, sy, sz] = lattice.dimensions();
 
                 let [ct, cx, cy, cz] = desc.chunk_size;
 
-                let set_name = format!("data-{elapsed}");
-                let set = snapshot
+                let set_name = format!("{elapsed}");
+                let set = snapshot_group
                     .new_dataset::<f64>()
                     .chunk([1, ct, cx, cy, cz])
                     .shape((1.., st, sx, sy, sz))
