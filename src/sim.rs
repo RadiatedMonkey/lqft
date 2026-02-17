@@ -17,6 +17,7 @@ use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
+use crate::visual::MetricState;
 
 /// Makes all struct fields public in the current and specified modules.
 /// This makes it easier to spread implementation details over multiple archive.
@@ -78,10 +79,10 @@ all_public_in!(
         measurement_interval: usize,
 
         current_step_size: AtomicF64,
-        current_sweep: usize,
 
+        metrics: MetricState,
         snapshot_state: Option<SnapshotState>,
-        stats: SystemStats,
+        data: SystemStats,
     }
 );
 
@@ -101,25 +102,25 @@ impl System {
     /// by independent threads (i.e. every red site is only accessed by a single thread at once). The black sites are not updated
     /// and are accessed by multiple threads at a time. The same holds for simulating black sites.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
+        self.data.desired_sweeps = total_sweeps;
+
         if let Some(state) = &mut self.snapshot_state {
             state.init(self.lattice.dimensions(), total_sweeps)?;
         }
 
-        self.stats.reserve_capacity(total_sweeps);
+        self.data.reserve_capacity(total_sweeps);
         self.correlation_slices
             .resize(self.lattice.dimensions()[0], 0.0);
         let (red, black) = self.lattice.generate_checkerboard();
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
-        let mut sweep_timer = Instant::now();
-
-        let mut seed_rng = rand::rng();
-        let mut rng = Xoshiro256PlusPlus::from_rng(&mut seed_rng);
+        let mut sweep_timer;
+        let mut total_timer = Instant::now();
 
         for i in 0..total_sweeps {
             sweep_timer = Instant::now();
-            self.current_sweep = i;
+            self.data.current_sweep = i;
 
             // First update red sites....
             self.simulating.store(true, Ordering::SeqCst);
@@ -138,6 +139,7 @@ impl System {
                         *self.lattice[index].get() = new_site;
                     };
 
+                    let index = index as u64;
                     if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
                     {
                         self.correct_step_size();
@@ -161,6 +163,7 @@ impl System {
                         *self.lattice[index].get() = new_site;
                     }
 
+                    let index = index as u64;
                     if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
                     {
                         self.correct_step_size();
@@ -175,17 +178,17 @@ impl System {
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
             if i > 2 * self.burn_in_desc.block_size {
-                self.stats.thermalisation_ratio_history.push(th_ratio);
+                self.data.thermalisation_ratio_history.push(th_ratio);
             }
 
-            if self.stats.thermalised_at.is_none() && thermalised {
+            if self.data.thermalised_at.is_none() && thermalised {
                 // System has thermalised, measurements can begin.
-                self.stats.thermalised_at = Some(i);
+                self.data.thermalised_at = Some(i);
             }
 
             // If system is thermalised and some amount of autocorrelation times have passed,
             // perform another measurement.
-            if self.stats.thermalised_at.is_some() && i % self.measurement_interval == 0 {
+            if self.data.thermalised_at.is_some() && i % self.measurement_interval == 0 {
                 let sum_t = self.get_timeslice();
                 let st = self.lattice.dimensions()[0];
 
@@ -199,15 +202,20 @@ impl System {
                     self.correlation_slices[t] += config_corr / (st as f64);
                 }
 
-                self.stats.performed_measurements += 1;
+                self.data.performed_measurements += 1;
             }
 
             // Record statistics on every sweep.
             self.record_stats(sweep_time, &sweep_timer, i, total_sweeps)?;
+
+            if total_timer.elapsed().as_secs() >= 1 {
+                self.push_metrics();
+                total_timer = Instant::now();
+            }
         }
 
         for t in 0..self.lattice.dimensions()[0] {
-            self.correlation_slices[t] /= self.stats.performed_measurements as f64;
+            self.correlation_slices[t] /= self.data.performed_measurements as f64;
         }
 
         tracing::info!("Run completed");
@@ -298,12 +306,12 @@ impl System {
         let accept_prob = (-total_delta).exp();
         let realised = Self::random_range(rng, 0.0..1.0);
 
-        self.stats.total_moves.fetch_add(1, Ordering::Relaxed);
+        self.data.total_moves.fetch_add(1, Ordering::Relaxed);
         if realised < accept_prob {
-            self.stats
+            self.data
                 .current_action
                 .fetch_add(total_delta, Ordering::AcqRel);
-            self.stats.accepted_moves.fetch_add(1, Ordering::Relaxed);
+            self.data.accepted_moves.fetch_add(1, Ordering::Relaxed);
             return new_val;
         }
 
@@ -329,7 +337,7 @@ impl System {
 impl System {
     /// The current statistics of the simulation.
     pub fn stats(&self) -> &SystemStats {
-        &self.stats
+        &self.data
     }
 
     /// The current thermalisation ratio threshold.
@@ -348,10 +356,6 @@ impl System {
     /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
     pub fn th_block_size(&self) -> usize {
         self.burn_in_desc.block_size
-    }
-
-    pub fn current_sweep(&self) -> usize {
-        self.current_sweep
     }
 
     pub fn correlator2(&self) -> &[f64] {
@@ -377,6 +381,6 @@ impl System {
     ///
     /// Once this returns true, the system is ready for measurement.
     pub fn thermalised(&self) -> bool {
-        self.stats.thermalised_at.is_some()
+        self.data.thermalised_at.is_some()
     }
 }

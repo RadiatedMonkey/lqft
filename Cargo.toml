@@ -11,6 +11,8 @@ indicatif = "0.18.4"
 ndarray = "0.17.2"
 num-traits = "0.2.19"
 plotters = "0.3.7"
+prometheus = "0.14.0"
+prometheus_exporter = { git = 'https://github.com/AlexanderThaller/prometheus_exporter.git', rev = 'c49efe614486f998b20eb410ae0caf3e904cf540' }
 rand = "0.10.0"
 rand_xoshiro = "0.8.0"
 rayon = "1.11.0"

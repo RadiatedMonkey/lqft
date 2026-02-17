@@ -9,6 +9,7 @@ use hdf5_metno as hdf5;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
+use crate::visual::MetricState;
 
 impl System {
     /// Determines whether thermalisation of the system has finished.
@@ -44,7 +45,7 @@ impl System {
             "Step size should not be adjusted after the system has thermalised"
         );
 
-        let acceptance_ratio = self.stats.accepted_moves() as f64 / self.stats.total_moves() as f64;
+        let acceptance_ratio = self.data.accepted_moves() as f64 / self.data.total_moves() as f64;
 
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.acceptance_desc.desired_range.start {
@@ -154,7 +155,7 @@ pub struct AcceptanceDesc {
     /// The amount of sweeps between step size corrections.
     ///
     /// Default value: `20_000`.
-    pub correction_interval: usize,
+    pub correction_interval: u64,
     /// The initial step size at the beginning of the simulation.
     ///
     /// If possible, set this to a value close to the optimal step size. For suboptimal step sizes
@@ -408,25 +409,25 @@ impl SystemBuilder {
 
         let mut sim = System {
             simulating: AtomicBool::new(false),
-            current_sweep: 0,
             lattice,
             mass_squared: self.param_desc.mass_squared,
             coupling: self.param_desc.coupling,
-            stats: SystemStats::default(),
+            data: SystemStats::default(),
             current_step_size: AtomicF64::new(self.acceptance_desc.initial_step_size),
             acceptance_desc: self.acceptance_desc,
             burn_in_desc: self.burn_in_desc,
             correlation_slices: Vec::new(),
             measurement_interval: 50,
+            metrics: MetricState::new()?,
             snapshot_state,
         };
 
         let first_action = sim.compute_full_action();
-        sim.stats
+        sim.data
             .current_action
             .store(first_action, Ordering::Release);
 
-        sim.stats.action_history.push(first_action);
+        sim.data.action_history.push(first_action);
 
         tracing::info!("System initialised");
 

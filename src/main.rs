@@ -36,31 +36,32 @@ fn app() -> anyhow::Result<()> {
             chunk_size: [16; 4],
             flush_method: FlushMethod::Sequential,
         })
-        // .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
-        //     dimensions: [40, 20, 20, 20],
-        //     initial_state: InitialState::RandomRange(-0.5..0.5),
-        //     spacing: 1.0,
-        // }))
-        .with_lattice(LatticeDesc::Load(LatticeLoadDesc {
-            hdf5_file: String::from("snapshots/snapshots.h5"),
-            location: SnapshotLocation::Latest(String::from("snapshots")),
+        .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
+            dimensions: [50, 25, 25, 25],
+            // initial_state: InitialState::RandomRange(-2.5..2.5),
+            initial_state: InitialState::Fixed(0.0),
             spacing: 1.0,
         }))
+        // .with_lattice(LatticeDesc::Load(LatticeLoadDesc {
+        //     hdf5_file: String::from("snapshots/snapshots.h5"),
+        //     location: SnapshotLocation::Latest(String::from("snapshots")),
+        //     spacing: 1.0,
+        // }))
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
-            initial_step_size: 1.0,
+            initial_step_size: 2.0,
             desired_range: 0.3..0.5,
             correction_size: 0.05,
         })
         .with_burn_in(BurnInDesc {
-            block_size: 25,
+            block_size: 500,
             required_ratio: 0.05,
         })
         .build()?;
 
     visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 100;
+    let total_sweeps = 100000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     visual::plot_lattice(1, sim.lattice())?;

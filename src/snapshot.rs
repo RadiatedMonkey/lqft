@@ -3,7 +3,6 @@ use crate::setup::{FlushMethod, SnapshotDesc, SnapshotType};
 use crate::stats::SweepStats;
 use hdf5_metno as hdf5;
 use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
-use std::ops::Div;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
