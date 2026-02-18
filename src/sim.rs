@@ -17,6 +17,7 @@ use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
+use crate::observable::{Observable, ObservableStorage};
 use crate::visual::MetricState;
 
 /// Makes all struct fields public in the current and specified modules.
@@ -58,31 +59,28 @@ impl From<SystemSettings> for [f64; 4] {
     }
 }
 
+pub struct SystemData {
+    pub lattice: Lattice,
+    pub mass_squared: f64,
+    pub coupling: f64,
+    pub acceptance_desc: AcceptanceDesc,
+    pub burn_in_desc: BurnInDesc,
+    /// A vector for every possible C(t)
+    /// where the inner vector is for every sweep
+    pub correlation_slices: Vec<f64>,
+    pub measurement_interval: usize,
+    pub current_step_size: AtomicF64,
+    pub stats: SystemStats,
+}
+
 all_public_in!(
     super,
     pub struct System {
-        /// Whether the lattice is currently in use by the checkerboard method.
-        /// If this is true, the system should not be read from.
         simulating: AtomicBool,
-
-        lattice: Lattice,
-
-        mass_squared: f64,
-        coupling: f64,
-
-        acceptance_desc: AcceptanceDesc,
-        burn_in_desc: BurnInDesc,
-
-        /// A vector for every possible C(t)
-        /// where the inner vector is for every sweep
-        correlation_slices: Vec<f64>,
-        measurement_interval: usize,
-
-        current_step_size: AtomicF64,
-
         metrics: MetricState,
-        snapshot_state: Option<SnapshotState>,
-        data: SystemStats,
+        snapshot_data: Option<SnapshotState>,
+        observables: ObservableStorage,
+        data: SystemData
     }
 );
 
@@ -182,6 +180,7 @@ impl System {
             }
 
             if self.data.thermalised_at.is_none() && thermalised {
+                tracing::info!("System has thermalised at sweep {i}");
                 // System has thermalised, measurements can begin.
                 self.data.thermalised_at = Some(i);
             }
@@ -214,6 +213,8 @@ impl System {
             }
         }
 
+        self.push_metrics();
+
         for t in 0..self.lattice.dimensions()[0] {
             self.correlation_slices[t] /= self.data.performed_measurements as f64;
         }
@@ -221,6 +222,19 @@ impl System {
         tracing::info!("Run completed");
 
         Ok(())
+    }
+
+    /// Obtains the latest measurements of the given observable.
+    pub fn measured<O: Observable>(&self) -> O::Output {
+        todo!()
+    }
+
+    pub fn observables(&self) -> &ObservableStorage {
+        &self.observables
+    }
+
+    pub fn observables_mut(&mut self) -> &mut ObservableStorage {
+        &mut self.observables
     }
 
     /// Computes the autocorrelation time of the system in its current state.

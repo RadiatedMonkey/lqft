@@ -270,6 +270,14 @@ pub struct MetricState {
     mean: ps::Gauge,
     meansq: ps::Gauge,
     var: ps::Gauge,
+
+    cpu: ps::Gauge,
+    mem: ps::Gauge,
+
+    sys: sysinfo::System,
+    pid: sysinfo::Pid,
+    pid_ctr: ps::IntCounter,
+    runtime: ps::Gauge
 }
 
 impl MetricState {
@@ -291,6 +299,15 @@ impl MetricState {
         let meansq = ps::register_gauge!("field_meansq", "Mean Squared Value")?;
         let var = ps::register_gauge!("field_variance", "Variance")?;
 
+        let cpu = ps::register_gauge!("cpu", "CPU usage")?;
+        let mem = ps::register_gauge!("mem", "Memory usage")?;
+        let pid_ctr = ps::register_int_counter!("pid", "PID")?;
+
+        let pid = sysinfo::get_current_pid().unwrap();
+        pid_ctr.inc_by(pid.as_u32() as u64);
+
+        let runtime = ps::register_gauge!("run_time", "Run time")?;
+
         let running = Arc::new(AtomicBool::new(true));
         let clone = Arc::clone(&running);
 
@@ -310,16 +327,17 @@ impl MetricState {
             mean, meansq, var,
             stats_time,
             completed_sweeps,
-            thermalised_at
+            thermalised_at,
+            cpu, mem, sys: sysinfo::System::new_all(),
+            pid_ctr, pid,
+            runtime
         })
     }
 }
 
 impl System {
-    pub fn push_metrics(&self) {
-        tracing::info!("Publish metrics");
-
-        let metrics = &self.metrics;
+    pub fn push_metrics(&mut self) {
+        let metrics = &mut self.metrics;
 
         set_int_to(&metrics.total_moves, self.data.total_moves.load(Ordering::SeqCst));
         set_int_to(&metrics.accepted_moves, self.data.accepted_moves.load(Ordering::SeqCst));
@@ -351,10 +369,17 @@ impl System {
         let therm_ratio = self.data.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
         metrics.therm_ratio.set(therm_ratio);
 
-        set_int_to(&metrics.completed_sweeps, self.data.current_sweep as u64);
+        set_int_to(&metrics.completed_sweeps, self.data.current_sweep as u64 + 1);
 
         if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.thermalised_at {
             metrics.thermalised_at.inc_by(sweep as u64);
+        }
+
+        metrics.sys.refresh_all();
+        if let Some(proc) = metrics.sys.process(metrics.pid) {
+            metrics.cpu.set(proc.cpu_usage() as f64);
+            metrics.mem.set(proc.memory() as f64);
+            metrics.runtime.set(proc.run_time() as f64);
         }
     }
 }

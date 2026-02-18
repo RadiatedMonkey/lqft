@@ -9,6 +9,8 @@ use hdf5_metno as hdf5;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
+use crate::observable::{Observable, ObservableStorage};
+use crate::sim::SystemData;
 use crate::visual::MetricState;
 
 impl System {
@@ -50,14 +52,18 @@ impl System {
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.acceptance_desc.desired_range.start {
             let correction = 1.0 - self.acceptance_desc.correction_size;
-            let _ = self
+            let size = self
                 .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
+
+            tracing::debug!("Step size corrected downwards to {:.2}", size.unwrap() * correction);
         } else if acceptance_ratio > self.acceptance_desc.desired_range.end {
             let correction = 1.0 + self.acceptance_desc.correction_size;
-            let _ = self
+            let size = self
                 .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
+
+            tracing::debug!("Step size corrected upwards to {:.2}", size.unwrap() * correction);
         }
     }
 }
@@ -288,8 +294,8 @@ impl Default for ParamDesc {
 }
 
 /// Used to configure a lattice simulation.
-#[derive(Debug, Clone)]
 pub struct SystemBuilder {
+    observables: ObservableStorage,
     param_desc: ParamDesc,
     lattice_desc: LatticeDesc,
     acceptance_desc: AcceptanceDesc,
@@ -301,6 +307,7 @@ impl SystemBuilder {
     /// Creates a new system builder with default configuration.
     pub fn new() -> Self {
         Self {
+            observables: ObservableStorage::new(),
             snapshot: None,
             lattice_desc: LatticeDesc::Create(LatticeCreateDesc::default()),
             param_desc: ParamDesc::default(),
@@ -324,6 +331,11 @@ impl SystemBuilder {
     /// Snapshots are disabled by default.
     pub fn disable_snapshot(mut self) -> Self {
         self.snapshot = None;
+        self
+    }
+
+    pub fn with_observable<O: Observable>(mut self) -> Self {
+        todo!();
         self
     }
 
@@ -361,14 +373,14 @@ impl SystemBuilder {
 
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<System> {
-        tracing::info!("Generating simulation with configuration: {self:?}");
+        tracing::info!("Finished configuration, building simulation...");
 
         let lattice = match self.lattice_desc {
             LatticeDesc::Create(desc) => Lattice::new(desc),
             LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot)?,
         };
 
-        let snapshot_state = self
+        let snapshot_data = self
             .snapshot
             .map(|desc| {
                 let snapshot =
@@ -407,27 +419,32 @@ impl SystemBuilder {
             })
             .transpose()?;
 
-        let mut sim = System {
-            simulating: AtomicBool::new(false),
+        let data = SystemData {
             lattice,
             mass_squared: self.param_desc.mass_squared,
             coupling: self.param_desc.coupling,
-            data: SystemStats::default(),
             current_step_size: AtomicF64::new(self.acceptance_desc.initial_step_size),
             acceptance_desc: self.acceptance_desc,
             burn_in_desc: self.burn_in_desc,
             correlation_slices: Vec::new(),
             measurement_interval: 50,
+            stats: SystemStats::default(),
+        };
+
+        let mut sim = System {
+            data,
+            observables: self.observables,
+            simulating: AtomicBool::new(false),
             metrics: MetricState::new()?,
-            snapshot_state,
+            snapshot_data,
         };
 
         let first_action = sim.compute_full_action();
-        sim.data
+        sim.data.stats
             .current_action
             .store(first_action, Ordering::Release);
 
-        sim.data.action_history.push(first_action);
+        sim.data.stats.action_history.push(first_action);
 
         tracing::info!("System initialised");
 
