@@ -2,8 +2,8 @@
 
 use crate::observable::*;
 
-use crate::observable::{MeasureInterval, Observable, ObservableState};
-use crate::sim::System;
+use crate::observable::{MeasureFrequency, Observable, ObservableState};
+use crate::sim::{System, SystemData};
 
 /// Measures the mean of the lattice.
 pub struct MeanValue;
@@ -13,40 +13,36 @@ impl Observable for MeanValue {
     type State = MeanValueState;
 
     const NAME: &'static str = "mean_value";
-
-    #[inline]
-    fn interval() -> MeasureInterval {
-        MeasureInterval::Sweep(1)
-    }
-
-    #[inline]
-    fn measure(system: &System) -> f64 {
-        system.lattice().mean()
-    }
 }
 
 pub struct MeanValueState {
     data: Vec<f64>
 }
 
-impl BaseObservableState for MeanValueState {
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.data.reserve(n);
+impl ObservableMeasure for MeanValueState {
+    fn measure(&mut self, data: &SystemData) {
+        let mean = data.lattice.mean();
+        self.data.push(mean);
     }
 }
 
 impl ObservableState for MeanValueState {
-    fn measure(&mut self, system: &System) {
-        let mean = system.lattice().mean();
-        self.data.push(mean);
-    }
+    const FREQUENCY: MeasureFrequency = MeasureFrequency::Sweep(1);
 
     fn measured(&self) -> Option<f64> {
         self.data.last().copied()
+    }
+
+    fn init() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn prepare(&mut self, n: usize) {
+        self.data.reserve(n);
     }
 }
 
@@ -58,39 +54,35 @@ impl Observable for Variance {
     type State = VarianceState;
 
     const NAME: &'static str = "variance";
-
-    #[inline]
-    fn interval() -> MeasureInterval {
-        MeasureInterval::Sweep(1)
-    }
-
-    #[inline]
-    fn measure(system: &System) -> f64 {
-        todo!()
-    }
 }
 
 pub struct VarianceState {
     data: Vec<f64>
 }
 
-impl BaseObservableState for VarianceState {
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-
-    fn reserve(&mut self, n: usize) {
-        self.data.reserve(n);
+impl ObservableMeasure for VarianceState {
+    fn measure(&mut self, data: &SystemData) {
+        let var = data.lattice.variance();
+        self.data.push(var);
     }
 }
 
 impl ObservableState<f64> for VarianceState {
-    fn measure(&mut self, system: &System) {
-        let var = system.lattice().variance();
-        self.data.push(var);
-    }
+    const FREQUENCY: MeasureFrequency = MeasureFrequency::Sweep(1);
 
     fn measured(&self) -> Option<f64> {
         self.data.last().copied()
+    }
+
+    fn init() -> Self {
+        Self { data: Vec::new() }
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn prepare(&mut self, n: usize) {
+        self.data.reserve(n);
     }
 }

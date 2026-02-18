@@ -118,128 +118,129 @@ fn find_max(data: &[f64]) -> f64 {
 }
 
 pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
-    let filename = format!("plots/{}", desc.file);
-    let stats = sim.stats();
-
-    let root =
-        BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let avg_stats_capture_time = stats
-        .stats_time_history
-        .iter()
-        .map(|&t| t as f64)
-        .sum::<f64>()
-        / stats.stats_time_history.len() as f64;
-    let avg_sweep_time = stats
-        .sweep_time_history
-        .iter()
-        .map(|&t| t as f64)
-        .sum::<f64>()
-        / stats.sweep_time_history.len() as f64;
-
-    let acceptance_range = &sim.acceptance_desc.desired_range;
-    let lines = [
-        format!("Lattice spacing: {:.2}", sim.lattice().spacing()),
-        format!("Mass squared: {:.2}", sim.mass_squared()),
-        format!("Coupling: {:.2}", sim.coupling()),
-        format!(
-            "Acceptance ratio target: {:.0}%-{:.0}%",
-            acceptance_range.start * 100.0,
-            acceptance_range.end * 100.0
-        ),
-        format!("Action block size: {} sweeps", sim.th_block_size()),
-        format!("Action block average threshold {}", sim.th_threshold()),
-        format!(
-            "Step size correction every {} iterations",
-            sim.acceptance_desc.correction_interval
-        ),
-        format!("A sweep is {} iterations", sim.lattice().sweep_size()),
-        format!(
-            "System reached equilibrium at sweep {}",
-            stats
-                .thermalised_at
-                .map(|s| s.to_string())
-                .unwrap_or("NA".to_owned())
-        ),
-        format!("Performed {} measurements", stats.performed_measurements),
-        format!("Average statistics capture time: {avg_stats_capture_time} microseconds"),
-        format!("Average sweep process time: {avg_sweep_time} microseconds"),
-    ];
-
-    for (i, line) in lines.iter().enumerate() {
-        root.draw_text(
-            line,
-            &TextStyle::from(("sans-serif", 30)),
-            (50, 50 + 30 * i as i32),
-        )?;
-    }
-
-    let areas = root.split_evenly(desc.layout);
-
-    // Skip first plot to use as text.
-    for (i, area) in areas.iter().enumerate().skip(1) {
-        let opt = desc.graphs.get(i - 1);
-        if opt.is_none() {
-            break;
-        }
-
-        let graph = opt.unwrap();
-
-        let xdata = &graph.xdata[desc.burnin_time..];
-        let (xmin, xmax) = if graph.xlim.is_empty() {
-            (find_min(xdata), find_max(xdata))
-        } else {
-            (graph.xlim.start, graph.xlim.end)
-        };
-
-        let ydata = &graph.ydata[desc.burnin_time..];
-        let (ymin, ymax) = if graph.ylim.is_empty() {
-            (find_min(ydata), find_max(ydata))
-        } else {
-            (graph.ylim.start, graph.ylim.end)
-        };
-
-        let mut cc = ChartBuilder::on(area)
-            .margin(5)
-            .x_label_area_size(40)
-            .y_label_area_size(40)
-            .caption(graph.caption, ("sans-serif", 40))
-            .build_cartesian_2d(xmin..xmax, ymin..ymax)?;
-
-        cc.configure_mesh()
-            .x_labels(10)
-            .x_label_formatter(&|v| format!("{v:.0}"))
-            .x_desc("Sweeps")
-            .y_labels(10)
-            .y_desc(graph.ydesc)
-            .draw()?;
-
-        // Plot observable
-        cc.draw_series(LineSeries::new(
-            xdata.iter().copied().zip(ydata.iter().copied()),
-            &BLUE,
-        ))?;
-
-        if let Some(point) = stats.thermalised_at {
-            // Plot thermalisation point
-            cc.draw_series(DashedLineSeries::new(
-                vec![(point as f64, ymin), (point as f64, ymax)],
-                2,
-                4,
-                ShapeStyle {
-                    color: RED.mix(1.0),
-                    filled: false,
-                    stroke_width: 1,
-                },
-            ))?;
-        }
-    }
-
-    root.present()?;
-    tracing::info!("Graph has been plotted in {filename}");
-
-    Ok(())
+    // let filename = format!("plots/{}", desc.file);
+    // let stats = sim.stats();
+    //
+    // let root =
+    //     BitMapBackend::new(&filename, (desc.dimensions.0, desc.dimensions.1)).into_drawing_area();
+    // root.fill(&WHITE)?;
+    //
+    // let avg_stats_capture_time = stats
+    //     .stats_time_history
+    //     .iter()
+    //     .map(|&t| t as f64)
+    //     .sum::<f64>()
+    //     / stats.stats_time_history.len() as f64;
+    // let avg_sweep_time = stats
+    //     .sweep_time_history
+    //     .iter()
+    //     .map(|&t| t as f64)
+    //     .sum::<f64>()
+    //     / stats.sweep_time_history.len() as f64;
+    //
+    // // let acceptance_range = &sim.acceptance_desc.desired_range;
+    // let lines = [
+    //     format!("Lattice spacing: {:.2}", sim.lattice().spacing()),
+    //     format!("Mass squared: {:.2}", sim.mass_squared()),
+    //     format!("Coupling: {:.2}", sim.coupling()),
+    //     // format!(
+    //     //     "Acceptance ratio target: {:.0}%-{:.0}%",
+    //     //     acceptance_range.start * 100.0,
+    //     //     acceptance_range.end * 100.0
+    //     // ),
+    //     format!("Action block size: {} sweeps", sim.th_block_size()),
+    //     format!("Action block average threshold {}", sim.th_threshold()),
+    //     // format!(
+    //     //     "Step size correction every {} iterations",
+    //     //     sim.acceptance_desc.correction_interval
+    //     // ),
+    //     format!("A sweep is {} iterations", sim.lattice().sweep_size()),
+    //     format!(
+    //         "System reached equilibrium at sweep {}",
+    //         stats
+    //             .thermalised_at
+    //             .map(|s| s.to_string())
+    //             .unwrap_or("NA".to_owned())
+    //     ),
+    //     format!("Performed {} measurements", stats.performed_measurements),
+    //     format!("Average statistics capture time: {avg_stats_capture_time} microseconds"),
+    //     format!("Average sweep process time: {avg_sweep_time} microseconds"),
+    // ];
+    //
+    // for (i, line) in lines.iter().enumerate() {
+    //     root.draw_text(
+    //         line,
+    //         &TextStyle::from(("sans-serif", 30)),
+    //         (50, 50 + 30 * i as i32),
+    //     )?;
+    // }
+    //
+    // let areas = root.split_evenly(desc.layout);
+    //
+    // // Skip first plot to use as text.
+    // for (i, area) in areas.iter().enumerate().skip(1) {
+    //     let opt = desc.graphs.get(i - 1);
+    //     if opt.is_none() {
+    //         break;
+    //     }
+    //
+    //     let graph = opt.unwrap();
+    //
+    //     let xdata = &graph.xdata[desc.burnin_time..];
+    //     let (xmin, xmax) = if graph.xlim.is_empty() {
+    //         (find_min(xdata), find_max(xdata))
+    //     } else {
+    //         (graph.xlim.start, graph.xlim.end)
+    //     };
+    //
+    //     let ydata = &graph.ydata[desc.burnin_time..];
+    //     let (ymin, ymax) = if graph.ylim.is_empty() {
+    //         (find_min(ydata), find_max(ydata))
+    //     } else {
+    //         (graph.ylim.start, graph.ylim.end)
+    //     };
+    //
+    //     let mut cc = ChartBuilder::on(area)
+    //         .margin(5)
+    //         .x_label_area_size(40)
+    //         .y_label_area_size(40)
+    //         .caption(graph.caption, ("sans-serif", 40))
+    //         .build_cartesian_2d(xmin..xmax, ymin..ymax)?;
+    //
+    //     cc.configure_mesh()
+    //         .x_labels(10)
+    //         .x_label_formatter(&|v| format!("{v:.0}"))
+    //         .x_desc("Sweeps")
+    //         .y_labels(10)
+    //         .y_desc(graph.ydesc)
+    //         .draw()?;
+    //
+    //     // Plot observable
+    //     cc.draw_series(LineSeries::new(
+    //         xdata.iter().copied().zip(ydata.iter().copied()),
+    //         &BLUE,
+    //     ))?;
+    //
+    //     if let Some(point) = stats.thermalised_at {
+    //         // Plot thermalisation point
+    //         cc.draw_series(DashedLineSeries::new(
+    //             vec![(point as f64, ymin), (point as f64, ymax)],
+    //             2,
+    //             4,
+    //             ShapeStyle {
+    //                 color: RED.mix(1.0),
+    //                 filled: false,
+    //                 stroke_width: 1,
+    //             },
+    //         ))?;
+    //     }
+    // }
+    //
+    // root.present()?;
+    // tracing::info!("Graph has been plotted in {filename}");
+    //
+    // Ok(())
+    todo!()
 }
 
 use prometheus::Encoder;
@@ -339,41 +340,41 @@ impl System {
     pub fn push_metrics(&mut self) {
         let metrics = &mut self.metrics;
 
-        set_int_to(&metrics.total_moves, self.data.total_moves.load(Ordering::SeqCst));
-        set_int_to(&metrics.accepted_moves, self.data.accepted_moves.load(Ordering::SeqCst));
-
-        let mean = *self.data.mean_history.last().unwrap();
-        let meansq = *self.data.meansq_history.last().unwrap();
-
-        metrics.mean.set(mean);
-        metrics.meansq.set(meansq);
-        metrics.var.set(meansq - mean.pow(2));
-
-        let accept_ratio = *self.data.accept_ratio_history.last().unwrap();
-        metrics.accept_ratio.set(accept_ratio);
-
-        let progress = self.data.current_sweep as f64 / self.data.desired_sweeps as f64;
-        metrics.progress.set(progress);
-
-        metrics.step_size.set(self.current_step_size.load(Ordering::Relaxed));
-        metrics.action.set(self.data.current_action.load(Ordering::Relaxed));
-
-        set_int_to(&metrics.performed_measurements, self.data.performed_measurements as u64);
-
-        let sweep_time = *self.data.sweep_time_history.last().unwrap();
-        metrics.sweep_time.set(sweep_time as f64);
-
-        let stats_time = *self.data.stats_time_history.last().unwrap();
-        metrics.stats_time.set(stats_time as f64);
-
-        let therm_ratio = self.data.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
-        metrics.therm_ratio.set(therm_ratio);
-
-        set_int_to(&metrics.completed_sweeps, self.data.current_sweep as u64 + 1);
-
-        if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.thermalised_at {
-            metrics.thermalised_at.inc_by(sweep as u64);
-        }
+        // set_int_to(&metrics.total_moves, self.data.total_moves.load(Ordering::SeqCst));
+        // set_int_to(&metrics.accepted_moves, self.data.accepted_moves.load(Ordering::SeqCst));
+        //
+        // let mean = *self.data.mean_history.last().unwrap();
+        // let meansq = *self.data.meansq_history.last().unwrap();
+        //
+        // metrics.mean.set(mean);
+        // metrics.meansq.set(meansq);
+        // metrics.var.set(meansq - mean.pow(2));
+        //
+        // let accept_ratio = *self.data.accept_ratio_history.last().unwrap();
+        // metrics.accept_ratio.set(accept_ratio);
+        //
+        // let progress = self.data.current_sweep as f64 / self.data.desired_sweeps as f64;
+        // metrics.progress.set(progress);
+        //
+        // metrics.step_size.set(self.current_step_size.load(Ordering::Relaxed));
+        // metrics.action.set(self.data.current_action.load(Ordering::Relaxed));
+        //
+        // set_int_to(&metrics.performed_measurements, self.data.performed_measurements as u64);
+        //
+        // let sweep_time = *self.data.sweep_time_history.last().unwrap();
+        // metrics.sweep_time.set(sweep_time as f64);
+        //
+        // let stats_time = *self.data.stats_time_history.last().unwrap();
+        // metrics.stats_time.set(stats_time as f64);
+        //
+        // let therm_ratio = self.data.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
+        // metrics.therm_ratio.set(therm_ratio);
+        //
+        // set_int_to(&metrics.completed_sweeps, self.data.current_sweep as u64 + 1);
+        //
+        // if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.thermalised_at {
+        //     metrics.thermalised_at.inc_by(sweep as u64);
+        // }
 
         metrics.sys.refresh_all();
         if let Some(proc) = metrics.sys.process(metrics.pid) {

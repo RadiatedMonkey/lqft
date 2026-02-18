@@ -78,123 +78,123 @@ async fn app() -> anyhow::Result<()> {
         })
         .build()?;
 
-    visual::plot_lattice(0, sim.lattice())?;
+    // visual::plot_lattice(0, sim.lattice())?;
 
     let total_sweeps = 10_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
-    visual::plot_lattice(1, sim.lattice())?;
+    // visual::plot_lattice(1, sim.lattice())?;
 
-    let stats = sim.stats();
+    // let stats = sim.stats();
 
-    let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
-
-    let variance = stats
-        .mean_history
-        .iter()
-        .zip(stats.meansq_history.iter())
-        .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
-        .collect::<Vec<_>>();
-
-    let tdata = (0..sim.lattice().dimensions()[0])
-        .map(|v| v as f64)
-        .collect::<Vec<_>>();
-    // let corr2 = sim.correlator2();
-
-    let stats_time_mapped = stats
-        .stats_time_history
-        .iter()
-        .map(|&t| t as f64)
-        .collect::<Vec<_>>();
-    let sweep_time_mapped = stats
-        .sweep_time_history
-        .iter()
-        .map(|&t| t as f64)
-        .collect::<Vec<_>>();
-
-    let desc = GraphDesc {
-        dimensions: (3000, 3000),
-        file: "layout.png",
-        layout: (4, 3),
-        burnin_time: 0,
-        graphs: &[
-            GraphData {
-                caption: "Mean value",
-                xdata: &sweepx,
-                ydata: &stats.mean_history,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Variance",
-                xdata: &sweepx,
-                ydata: &variance,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Mean squared",
-                xdata: &sweepx,
-                ydata: &stats.meansq_history,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Action block average",
-                xdata: &sweepx[sim.th_block_size() * 2..],
-                ydata: &stats.thermalisation_ratio_history,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Action",
-                xdata: &sweepx,
-                ydata: &stats.action_history,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Step size",
-                xdata: &sweepx,
-                ydata: &stats.step_size_history,
-                ylim: 0.75..1.25,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Acceptance ratio",
-                xdata: &sweepx,
-                ydata: &stats.accept_ratio_history,
-                ylim: 20.0..80.0,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Statistics capture time",
-                xdata: &sweepx,
-                ydata: &stats_time_mapped,
-                ..Default::default()
-            },
-            GraphData {
-                caption: "Sweep process time",
-                xdata: &sweepx,
-                ydata: &sweep_time_mapped,
-                ..Default::default()
-            }, // GraphData {
-               //     caption: "2-point correlator",
-               //     xdata: &tdata,
-               //     ydata: sim.correlator2(),
-               //     ..Default::default()
-               // }, // FIXME: Correlator2 seems to be filled with NaNs
-               // GraphData {
-               //     caption: "2-point Function",
-               //     xdata: &tdata,
-               //     ydata: &corr2,
-               //     ..Default::default()
-               // }
-        ],
-    };
-    plot_observable(desc, &sim)?;
+    // let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
+    //
+    // let variance = stats
+    //     .mean_history
+    //     .iter()
+    //     .zip(stats.meansq_history.iter())
+    //     .map(|(&mean, &meansq)| meansq - mean.powf(2.0))
+    //     .collect::<Vec<_>>();
+    //
+    // let tdata = (0..sim.lattice().dimensions()[0])
+    //     .map(|v| v as f64)
+    //     .collect::<Vec<_>>();
+    // // let corr2 = sim.correlator2();
+    //
+    // let stats_time_mapped = stats
+    //     .stats_time_history
+    //     .iter()
+    //     .map(|&t| t as f64)
+    //     .collect::<Vec<_>>();
+    // let sweep_time_mapped = stats
+    //     .sweep_time_history
+    //     .iter()
+    //     .map(|&t| t as f64)
+    //     .collect::<Vec<_>>();
+    //
+    // let desc = GraphDesc {
+    //     dimensions: (3000, 3000),
+    //     file: "layout.png",
+    //     layout: (4, 3),
+    //     burnin_time: 0,
+    //     graphs: &[
+    //         GraphData {
+    //             caption: "Mean value",
+    //             xdata: &sweepx,
+    //             ydata: &stats.mean_history,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Variance",
+    //             xdata: &sweepx,
+    //             ydata: &variance,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Mean squared",
+    //             xdata: &sweepx,
+    //             ydata: &stats.meansq_history,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Action block average",
+    //             xdata: &sweepx[sim.th_block_size() * 2..],
+    //             ydata: &stats.thermalisation_ratio_history,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Action",
+    //             xdata: &sweepx,
+    //             ydata: &stats.action_history,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Step size",
+    //             xdata: &sweepx,
+    //             ydata: &stats.step_size_history,
+    //             ylim: 0.75..1.25,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Acceptance ratio",
+    //             xdata: &sweepx,
+    //             ydata: &stats.accept_ratio_history,
+    //             ylim: 20.0..80.0,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Statistics capture time",
+    //             xdata: &sweepx,
+    //             ydata: &stats_time_mapped,
+    //             ..Default::default()
+    //         },
+    //         GraphData {
+    //             caption: "Sweep process time",
+    //             xdata: &sweepx,
+    //             ydata: &sweep_time_mapped,
+    //             ..Default::default()
+    //         }, // GraphData {
+    //            //     caption: "2-point correlator",
+    //            //     xdata: &tdata,
+    //            //     ydata: sim.correlator2(),
+    //            //     ..Default::default()
+    //            // }, // FIXME: Correlator2 seems to be filled with NaNs
+    //            // GraphData {
+    //            //     caption: "2-point Function",
+    //            //     xdata: &tdata,
+    //            //     ydata: &corr2,
+    //            //     ..Default::default()
+    //            // }
+    //     ],
+    // };
+    // plot_observable(desc, &sim)?;
 
     sim.push_metrics();
 
-    tracing::info!(
-        "System thermalised at sweep {:?}",
-        sim.stats().thermalised_at
-    );
+    // tracing::info!(
+    //     "System thermalised at sweep {:?}",
+    //     sim.stats().thermalised_at
+    // );
 
     Ok(())
 }

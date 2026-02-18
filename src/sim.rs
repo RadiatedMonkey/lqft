@@ -17,7 +17,7 @@ use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
-use crate::observable::{Observable, ObservableStorage};
+use crate::observable::{Observable, ObservableRegistry};
 use crate::visual::MetricState;
 
 /// Makes all struct fields public in the current and specified modules.
@@ -79,7 +79,7 @@ all_public_in!(
         simulating: AtomicBool,
         metrics: MetricState,
         snapshot_data: Option<SnapshotState>,
-        observables: ObservableStorage,
+        observables: ObservableRegistry,
         data: SystemData
     }
 );
@@ -100,124 +100,126 @@ impl System {
     /// by independent threads (i.e. every red site is only accessed by a single thread at once). The black sites are not updated
     /// and are accessed by multiple threads at a time. The same holds for simulating black sites.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
-        self.data.desired_sweeps = total_sweeps;
-
-        if let Some(state) = &mut self.snapshot_state {
-            state.init(self.lattice.dimensions(), total_sweeps)?;
-        }
-
-        self.data.reserve_capacity(total_sweeps);
-        self.correlation_slices
-            .resize(self.lattice.dimensions()[0], 0.0);
-        let (red, black) = self.lattice.generate_checkerboard();
+        // self.data.desired_sweeps = total_sweeps;
+        //
+        // if let Some(state) = &mut self.snapshot_state {
+        //     state.init(self.lattice.dimensions(), total_sweeps)?;
+        // }
+        //
+        // self.data.reserve_capacity(total_sweeps);
+        // self.correlation_slices
+        //     .resize(self.lattice.dimensions()[0], 0.0);
+        // let (red, black) = self.lattice.generate_checkerboard();
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
-        let mut sweep_timer;
-        let mut total_timer = Instant::now();
+        // let mut sweep_timer;
+        // let mut total_timer = Instant::now();
 
         for i in 0..total_sweeps {
-            sweep_timer = Instant::now();
-            self.data.current_sweep = i;
+            // sweep_timer = Instant::now();
+            // self.data.current_sweep = i;
+            //
+            // // First update red sites....
+            // self.simulating.store(true, Ordering::SeqCst);
+            // red.par_iter().for_each_init(
+            //     || {
+            //         let mut seed_rng = rand::rng();
+            //         Xoshiro256PlusPlus::from_rng(&mut seed_rng)
+            //
+            //         // rand::rng()
+            //     },
+            //     |rng, &index| {
+            //         // SAFETY: Since this is a red site, this thread has exclusive access to the site.
+            //         // Therefore it can safely update the value.
+            //         unsafe {
+            //             let new_site = self.checkerboard_site_flip(rng, index);
+            //             *self.lattice[index].get() = new_site;
+            //         };
+            //
+            //         let index = index as u64;
+            //         if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
+            //         {
+            //             self.correct_step_size();
+            //         }
+            //     },
+            // );
+            //
+            // // then black sites.
+            // black.par_iter().for_each_init(
+            //     || {
+            //         let mut seed_rng = rand::rng();
+            //         Xoshiro256PlusPlus::from_rng(&mut seed_rng)
+            //
+            //         // rand::rng()
+            //     },
+            //     |rng, &index| {
+            //         // SAFETY: Since this is a black site, this thread has exclusive access to the site.
+            //         // Therefore it can safely update the value.
+            //         unsafe {
+            //             let new_site = self.checkerboard_site_flip(rng, index);
+            //             *self.lattice[index].get() = new_site;
+            //         }
+            //
+            //         let index = index as u64;
+            //         if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
+            //         {
+            //             self.correct_step_size();
+            //         }
+            //     },
+            // );
+            // self.simulating.store(false, Ordering::SeqCst);
+            //
+            // let sweep_time = sweep_timer.elapsed();
+            // sweep_timer = Instant::now();
+            //
+            // // Keep track of thermalisation ratio.
+            // let (th_ratio, thermalised) = self.compute_burn_in_ratio();
+            // if i > 2 * self.burn_in_desc.block_size {
+            //     self.data.thermalisation_ratio_history.push(th_ratio);
+            // }
+            //
+            // if self.data.thermalised_at.is_none() && thermalised {
+            //     tracing::info!("System has thermalised at sweep {i}");
+            //     // System has thermalised, measurements can begin.
+            //     self.data.thermalised_at = Some(i);
+            // }
+            //
+            // // If system is thermalised and some amount of autocorrelation times have passed,
+            // // perform another measurement.
+            // if self.data.thermalised_at.is_some() && i % self.measurement_interval == 0 {
+            //     let sum_t = self.get_timeslice();
+            //     let st = self.lattice.dimensions()[0];
+            //
+            //     for t in 0..st {
+            //         let mut config_corr = 0.0;
+            //         for tp in 0..st {
+            //             let t_dist = (tp + t) % st;
+            //             config_corr += sum_t[tp] * sum_t[t_dist];
+            //         }
+            //
+            //         self.correlation_slices[t] += config_corr / (st as f64);
+            //     }
+            //
+            //     self.data.performed_measurements += 1;
+            // }
+            //
+            // // Record statistics on every sweep.
+            // self.record_stats(sweep_time, &sweep_timer, i, total_sweeps)?;
+            //
+            // if total_timer.elapsed().as_secs() >= 1 {
+            //     self.push_metrics();
+            //     total_timer = Instant::now();
+            // }
 
-            // First update red sites....
-            self.simulating.store(true, Ordering::SeqCst);
-            red.par_iter().for_each_init(
-                || {
-                    let mut seed_rng = rand::rng();
-                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-
-                    // rand::rng()
-                },
-                |rng, &index| {
-                    // SAFETY: Since this is a red site, this thread has exclusive access to the site.
-                    // Therefore it can safely update the value.
-                    unsafe {
-                        let new_site = self.checkerboard_site_flip(rng, index);
-                        *self.lattice[index].get() = new_site;
-                    };
-
-                    let index = index as u64;
-                    if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
-                    {
-                        self.correct_step_size();
-                    }
-                },
-            );
-
-            // then black sites.
-            black.par_iter().for_each_init(
-                || {
-                    let mut seed_rng = rand::rng();
-                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-
-                    // rand::rng()
-                },
-                |rng, &index| {
-                    // SAFETY: Since this is a black site, this thread has exclusive access to the site.
-                    // Therefore it can safely update the value.
-                    unsafe {
-                        let new_site = self.checkerboard_site_flip(rng, index);
-                        *self.lattice[index].get() = new_site;
-                    }
-
-                    let index = index as u64;
-                    if index % self.acceptance_desc.correction_interval == 0 && !self.thermalised()
-                    {
-                        self.correct_step_size();
-                    }
-                },
-            );
-            self.simulating.store(false, Ordering::SeqCst);
-
-            let sweep_time = sweep_timer.elapsed();
-            sweep_timer = Instant::now();
-
-            // Keep track of thermalisation ratio.
-            let (th_ratio, thermalised) = self.compute_burn_in_ratio();
-            if i > 2 * self.burn_in_desc.block_size {
-                self.data.thermalisation_ratio_history.push(th_ratio);
-            }
-
-            if self.data.thermalised_at.is_none() && thermalised {
-                tracing::info!("System has thermalised at sweep {i}");
-                // System has thermalised, measurements can begin.
-                self.data.thermalised_at = Some(i);
-            }
-
-            // If system is thermalised and some amount of autocorrelation times have passed,
-            // perform another measurement.
-            if self.data.thermalised_at.is_some() && i % self.measurement_interval == 0 {
-                let sum_t = self.get_timeslice();
-                let st = self.lattice.dimensions()[0];
-
-                for t in 0..st {
-                    let mut config_corr = 0.0;
-                    for tp in 0..st {
-                        let t_dist = (tp + t) % st;
-                        config_corr += sum_t[tp] * sum_t[t_dist];
-                    }
-
-                    self.correlation_slices[t] += config_corr / (st as f64);
-                }
-
-                self.data.performed_measurements += 1;
-            }
-
-            // Record statistics on every sweep.
-            self.record_stats(sweep_time, &sweep_timer, i, total_sweeps)?;
-
-            if total_timer.elapsed().as_secs() >= 1 {
-                self.push_metrics();
-                total_timer = Instant::now();
-            }
+            self.observables.measure(&mut self.data);
         }
 
         self.push_metrics();
 
-        for t in 0..self.lattice.dimensions()[0] {
-            self.correlation_slices[t] /= self.data.performed_measurements as f64;
-        }
+        // for t in 0..self.lattice.dimensions()[0] {
+        //     self.correlation_slices[t] /= self.data.performed_measurements as f64;
+        // }
 
         tracing::info!("Run completed");
 
@@ -229,11 +231,11 @@ impl System {
         todo!()
     }
 
-    pub fn observables(&self) -> &ObservableStorage {
+    pub fn observables(&self) -> &ObservableRegistry {
         &self.observables
     }
 
-    pub fn observables_mut(&mut self) -> &mut ObservableStorage {
+    pub fn observables_mut(&mut self) -> &mut ObservableRegistry {
         &mut self.observables
     }
 
@@ -245,31 +247,31 @@ impl System {
     /// Computes the absolute action of the entire lattice.
     pub fn compute_full_action(&self) -> f64 {
         let mut action = 0.0;
-        for i in 0..self.lattice.sweep_size() {
-            let a = self.lattice.spacing();
-
-            let val = unsafe { *self.lattice[i].get() };
-            let mut der_sum = 0.0;
-
-            for j in 0..4 {
-                // TODO: Create prebuilt adjacency table
-                // let orig = self.lattice.from_index(i);
-                let fneigh = self.lattice.get_forward_neighbor(i, j);
-                let bneigh = self.lattice.get_backward_neighbor(i, j);
-
-                // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
-                let fneigh_val = unsafe { *self.lattice[fneigh].get() };
-                let bneigh_val = unsafe { *self.lattice[bneigh].get() };
-
-                der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
-            }
-
-            let kinetic_delta = 0.5 * der_sum;
-            let mass_delta = 0.5 * self.mass_squared * val.pow(2);
-            let interaction_delta = 1.0 / 24.0 * self.coupling * val.pow(4);
-
-            action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
-        }
+        // for i in 0..self.lattice.sweep_size() {
+        //     let a = self.lattice.spacing();
+        //
+        //     let val = unsafe { *self.lattice[i].get() };
+        //     let mut der_sum = 0.0;
+        //
+        //     for j in 0..4 {
+        //         // TODO: Create prebuilt adjacency table
+        //         // let orig = self.lattice.from_index(i);
+        //         let fneigh = self.lattice.get_forward_neighbor(i, j);
+        //         let bneigh = self.lattice.get_backward_neighbor(i, j);
+        //
+        //         // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
+        //         let fneigh_val = unsafe { *self.lattice[fneigh].get() };
+        //         let bneigh_val = unsafe { *self.lattice[bneigh].get() };
+        //
+        //         der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
+        //     }
+        //
+        //     let kinetic_delta = 0.5 * der_sum;
+        //     let mass_delta = 0.5 * self.mass_squared * val.pow(2);
+        //     let interaction_delta = 1.0 / 24.0 * self.coupling * val.pow(4);
+        //
+        //     action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
+        // }
 
         action
     }
@@ -287,61 +289,61 @@ impl System {
     /// and the direct neighbours can safely be read from.
     #[inline(always)]
     unsafe fn checkerboard_site_flip<R: rand_core::Rng>(&self, rng: &mut R, site: usize) -> f64 {
-        let a = self.lattice.spacing();
-
-        let curr_val = unsafe { *self.lattice[site].get() };
-
-        let step_size = self.current_step_size();
-        let new_val = Self::random_range(rng, (curr_val - step_size)..(curr_val + step_size));
-
-        let mut curr_der_sum = 0.0;
-        let mut new_der_sum = 0.0;
-
-        for i in 0..4 {
-            // let orig = self.lattice.from_index(site);
-            let fneigh = self.lattice.get_forward_neighbor(site, i);
-            let bneigh = self.lattice.get_backward_neighbor(site, i);
-
-            // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
-            let fneigh_val = unsafe { *self.lattice[fneigh].get() };
-            let bneigh_val = unsafe { *self.lattice[bneigh].get() };
-
-            curr_der_sum +=
-                ((fneigh_val - curr_val) / a).pow(2) + ((curr_val - bneigh_val) / a).pow(2);
-            new_der_sum +=
-                ((fneigh_val - new_val) / a).pow(2) + ((new_val - bneigh_val) / a).pow(2);
-        }
-
-        let kinetic_delta = 0.5 * (new_der_sum - curr_der_sum);
-        let mass_delta = 0.5 * self.mass_squared * (new_val.pow(2) - curr_val.pow(2));
-        let interaction_delta = 1.0 / 24.0 * self.coupling * (new_val.pow(4) - curr_val.pow(4));
-
-        let total_delta: f64 = a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
-        let accept_prob = (-total_delta).exp();
-        let realised = Self::random_range(rng, 0.0..1.0);
-
-        self.data.total_moves.fetch_add(1, Ordering::Relaxed);
-        if realised < accept_prob {
-            self.data
-                .current_action
-                .fetch_add(total_delta, Ordering::AcqRel);
-            self.data.accepted_moves.fetch_add(1, Ordering::Relaxed);
-            return new_val;
-        }
+        // let a = self.data.lattice.spacing();
+        //
+        let curr_val = unsafe { *self.data.lattice[site].get() };
+        //
+        // let step_size = self.current_step_size();
+        // let new_val = Self::random_range(rng, (curr_val - step_size)..(curr_val + step_size));
+        //
+        // let mut curr_der_sum = 0.0;
+        // let mut new_der_sum = 0.0;
+        //
+        // for i in 0..4 {
+        //     // let orig = self.lattice.from_index(site);
+        //     let fneigh = self.data.lattice.get_forward_neighbor(site, i);
+        //     let bneigh = self.data.lattice.get_backward_neighbor(site, i);
+        //
+        //     // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
+        //     let fneigh_val = unsafe { *self.data.lattice[fneigh].get() };
+        //     let bneigh_val = unsafe { *self.data.lattice[bneigh].get() };
+        //
+        //     curr_der_sum +=
+        //         ((fneigh_val - curr_val) / a).pow(2) + ((curr_val - bneigh_val) / a).pow(2);
+        //     new_der_sum +=
+        //         ((fneigh_val - new_val) / a).pow(2) + ((new_val - bneigh_val) / a).pow(2);
+        // }
+        //
+        // let kinetic_delta = 0.5 * (new_der_sum - curr_der_sum);
+        // let mass_delta = 0.5 * self.data.mass_squared * (new_val.pow(2) - curr_val.pow(2));
+        // let interaction_delta = 1.0 / 24.0 * self.data.coupling * (new_val.pow(4) - curr_val.pow(4));
+        //
+        // let total_delta: f64 = a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
+        // let accept_prob = (-total_delta).exp();
+        // let realised = Self::random_range(rng, 0.0..1.0);
+        //
+        // self.data.stats.total_moves.fetch_add(1, Ordering::Relaxed);
+        // if realised < accept_prob {
+        //     self.data
+        //         .current_action
+        //         .fetch_add(total_delta, Ordering::AcqRel);
+        //     self.data.accepted_moves.fetch_add(1, Ordering::Relaxed);
+        //     return new_val;
+        // }
 
         curr_val
     }
 
     fn get_timeslice(&mut self) -> Vec<f64> {
         // Compute the spatial sum for every time slice
-        let st = self.lattice.dim_t();
+        let st = self.data.lattice.dim_t();
 
         let mut sum_t = vec![0.0; st];
-        for i in 0..self.lattice.sweep_size() {
-            let t = self.lattice.from_index(i)[0];
-            let val = unsafe { *self.lattice[i].get() };
-            sum_t[t] += val;
-        }
+        // for i in 0..self.lattice.sweep_size() {
+        //     let t = self.lattice.from_index(i)[0];
+        //     let val = unsafe { *self.lattice[i].get() };
+        //     sum_t[t] += val;
+        // }
 
         sum_t
     }
@@ -349,52 +351,52 @@ impl System {
 
 /// Getters and setters
 impl System {
-    /// The current statistics of the simulation.
-    pub fn stats(&self) -> &SystemStats {
-        &self.data
-    }
+    // /// The current statistics of the simulation.
+    // pub fn stats(&self) -> &SystemStats {
+    //     &self.data
+    // }
 
-    /// The current thermalisation ratio threshold.
-    ///
-    /// See [`SystemBuilder::th_threshold`] for more information.
-    pub fn th_threshold(&self) -> f64 {
-        self.burn_in_desc.required_ratio
-    }
+    // /// The current thermalisation ratio threshold.
+    // ///
+    // /// See [`SystemBuilder::th_threshold`] for more information.
+    // pub fn th_threshold(&self) -> f64 {
+    //     self.burn_in_desc.required_ratio
+    // }
+    //
+    // pub fn current_step_size(&self) -> f64 {
+    //     self.current_step_size.load(Ordering::Relaxed)
+    // }
 
-    pub fn current_step_size(&self) -> f64 {
-        self.current_step_size.load(Ordering::Relaxed)
-    }
-
-    /// The current thermalisation block size.
-    ///
-    /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
-    pub fn th_block_size(&self) -> usize {
-        self.burn_in_desc.block_size
-    }
-
-    pub fn correlator2(&self) -> &[f64] {
-        &self.correlation_slices
-    }
-
-    /// The current mass squared.
-    pub fn mass_squared(&self) -> f64 {
-        self.mass_squared
-    }
-
-    /// The current coupling constant.
-    pub fn coupling(&self) -> f64 {
-        self.coupling
-    }
-
-    /// The internal lattice used for data storage.
-    pub fn lattice(&self) -> &Lattice {
-        &self.lattice
-    }
-
-    /// Whether the system has thermalised yet.
-    ///
-    /// Once this returns true, the system is ready for measurement.
-    pub fn thermalised(&self) -> bool {
-        self.data.thermalised_at.is_some()
-    }
+    // /// The current thermalisation block size.
+    // ///
+    // /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
+    // pub fn th_block_size(&self) -> usize {
+    //     self.burn_in_desc.block_size
+    // }
+    //
+    // pub fn correlator2(&self) -> &[f64] {
+    //     &self.correlation_slices
+    // }
+    //
+    // /// The current mass squared.
+    // pub fn mass_squared(&self) -> f64 {
+    //     self.mass_squared
+    // }
+    //
+    // /// The current coupling constant.
+    // pub fn coupling(&self) -> f64 {
+    //     self.coupling
+    // }
+    //
+    // /// The internal lattice used for data storage.
+    // pub fn lattice(&self) -> &Lattice {
+    //     &self.lattice
+    // }
+    //
+    // /// Whether the system has thermalised yet.
+    // ///
+    // /// Once this returns true, the system is ready for measurement.
+    // pub fn thermalised(&self) -> bool {
+    //     self.data.thermalised_at.is_some()
+    // }
 }
