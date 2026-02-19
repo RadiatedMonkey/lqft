@@ -1,0 +1,35 @@
+[package]
+name = "lqft"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.101"
+atomic_float = "1.1.0"
+hdf5-metno = { version = "0.12.3", features = ["static", "zlib"] }
+indicatif = "0.18.4"
+ndarray = "0.17.2"
+nohash-hasher = "0.2.0"
+num-traits = "0.2.19"
+phf = "0.13.1"
+plotters = "0.3.7"
+prometheus = "0.14.0"
+prometheus_exporter = { git = 'https://github.com/AlexanderThaller/prometheus_exporter.git', rev = 'c49efe614486f998b20eb410ae0caf3e904cf540' }
+rand = "0.10.0"
+rand_xoshiro = "0.8.0"
+rayon = "1.11.0"
+serde = { version = "1.0.228", features = ["derive"] }
+sysinfo = "0.38.2"
+tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros"] }
+tracing = "0.1.44"
+tracing-loki = "0.2.6"
+tracing-subscriber = "0.3.22"
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+#lto = "fat"
+incremental = false
+codegen-units = 16

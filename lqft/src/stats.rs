@@ -65,73 +65,73 @@ impl System {
         sweep: usize,
         total_sweeps: usize,
     ) -> anyhow::Result<()> {
-        // let mean = self.lattice.mean();
-        // let meansq = self.lattice.meansq();
-        // let action = self.data.current_action.load(Ordering::Acquire);
-        //
-        // self.data.mean_history.push(mean);
-        // self.data.meansq_history.push(meansq);
-        // self.data.action_history.push(action);
-        //
-        // let accept = self.data.accepted_moves();
-        // let total = self.data.total_moves();
-        // let ratio = accept as f64 / total as f64 * 100.0;
-        //
-        // self.data.accepted_move_history.push(accept);
-        // self.data.accept_ratio_history.push(ratio);
-        // self.data.step_size_history.push(self.current_step_size());
-        // self.data.sweep_time_history.push(sweep_time.as_micros());
-        //
-        // let mut stat_time_saved = false;
-        //
-        // // Generate snapshot if snapshotting is enabled and an interval is passed *or* this is the
-        // // last sweep.
-        // if let Some(snapshot) = &self.snapshot_state {
-        //     let should_snapshot = match snapshot.desc.ty {
-        //         SnapshotType::Checkpoint => sweep == total_sweeps - 1,
-        //         SnapshotType::Interval(interval) => {
-        //             sweep == total_sweeps - 1 || sweep.is_multiple_of(interval)
-        //         }
-        //     };
-        //
-        //     if should_snapshot {
-        //         if sweep == total_sweeps - 1 {
-        //             tracing::info!("Last sweep avg is: {}", self.lattice.mean());
-        //         }
-        //
-        //         let clone = unsafe { self.lattice.clone() };
-        //
-        //         let stats_time = stat_timer.elapsed().as_millis();
-        //         let sweep = SweepStats {
-        //             total_moves: total,
-        //             accepted_moves: accept,
-        //             accept_ratio: ratio,
-        //             step_size: self.current_step_size(),
-        //             mean,
-        //             meansq: 0.0,
-        //             action,
-        //             th_ratio: 0.0,
-        //             performed_measurements: 0,
-        //             sweep_time: sweep_time.as_micros(),
-        //             stats_time,
-        //         };
-        //
-        //         let fragment = SnapshotFragment {
-        //             lattice: clone,
-        //             stats: sweep,
-        //         };
-        //
-        //         snapshot.send_fragment(fragment)?;
-        //         self.data.stats_time_history.push(stats_time);
-        //
-        //         stat_time_saved = true;
-        //     }
-        // }
-        //
-        // if !stat_time_saved {
-        //     let stats_time = stat_timer.elapsed().as_micros();
-        //     self.data.stats_time_history.push(stats_time);
-        // }
+        let mean = self.data.lattice.mean();
+        let meansq = self.data.lattice.meansq();
+        let action = self.data.stats.current_action.load(Ordering::Acquire);
+
+        self.data.stats.mean_history.push(mean);
+        self.data.stats.meansq_history.push(meansq);
+        self.data.stats.action_history.push(action);
+
+        let accept = self.data.stats.accepted_moves();
+        let total = self.data.stats.total_moves();
+        let ratio = accept as f64 / total as f64 * 100.0;
+
+        self.data.stats.accepted_move_history.push(accept);
+        self.data.stats.accept_ratio_history.push(ratio);
+        self.data.stats.step_size_history.push(self.current_step_size());
+        self.data.stats.sweep_time_history.push(sweep_time.as_micros());
+
+        let mut stat_time_saved = false;
+
+        // Generate snapshot if snapshotting is enabled and an interval is passed *or* this is the
+        // last sweep.
+        if let Some(snapshot) = &self.snapshot_state {
+            let should_snapshot = match snapshot.desc.ty {
+                SnapshotType::Checkpoint => sweep == total_sweeps - 1,
+                SnapshotType::Interval(interval) => {
+                    sweep == total_sweeps - 1 || sweep.is_multiple_of(interval)
+                }
+            };
+
+            if should_snapshot {
+                if sweep == total_sweeps - 1 {
+                    tracing::info!("Last sweep avg is: {}", self.data.lattice.mean());
+                }
+
+                let clone = unsafe { self.data.lattice.clone() };
+
+                let stats_time = stat_timer.elapsed().as_millis();
+                let sweep = SweepStats {
+                    total_moves: total,
+                    accepted_moves: accept,
+                    accept_ratio: ratio,
+                    step_size: self.current_step_size(),
+                    mean,
+                    meansq: 0.0,
+                    action,
+                    th_ratio: 0.0,
+                    performed_measurements: 0,
+                    sweep_time: sweep_time.as_micros(),
+                    stats_time,
+                };
+
+                let fragment = SnapshotFragment {
+                    lattice: clone,
+                    stats: sweep,
+                };
+
+                snapshot.send_fragment(fragment)?;
+                self.data.stats.stats_time_history.push(stats_time);
+
+                stat_time_saved = true;
+            }
+        }
+
+        if !stat_time_saved {
+            let stats_time = stat_timer.elapsed().as_micros();
+            self.data.stats.stats_time_history.push(stats_time);
+        }
 
         Ok(())
     }

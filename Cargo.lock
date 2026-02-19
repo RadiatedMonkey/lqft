@@ -1089,6 +1089,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "lqft-derive"
+version = "0.1.0"
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"

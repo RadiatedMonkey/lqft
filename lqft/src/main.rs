@@ -1,17 +1,19 @@
+#![feature(portable_simd)]
+
 mod lattice;
 mod observable;
 mod setup;
 mod sim;
 mod snapshot;
 mod stats;
-mod visual;
+mod metrics;
 mod observable_impl;
 
 use crate::setup::{
     AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc,
     LatticeLoadDesc, ParamDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder,
 };
-use crate::visual::{GraphData, GraphDesc, plot_observable};
+use crate::metrics::{GraphData, GraphDesc, plot_observable};
 use std::process::ExitCode;
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
@@ -30,6 +32,8 @@ async fn main() -> ExitCode {
 }
 
 async fn app() -> anyhow::Result<()> {
+    assert!(is_x86_feature_detected!("avx"));
+
     let (layer, task) = tracing_loki::builder()
         .label("application", "lqft")?
         .label("env", "dev")?
@@ -44,8 +48,8 @@ async fn app() -> anyhow::Result<()> {
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
-            mass_squared: -1.0,
-            coupling: 1.0,
+            mass_squared: 1.0,
+            coupling: 0.0,
         })
         .enable_snapshot(SnapshotDesc {
             file: "snapshots/snapshots.h5".to_string(),
@@ -65,7 +69,7 @@ async fn app() -> anyhow::Result<()> {
         //     spacing: 1.0,
         // })
         .with_observable::<MeanValue>()
-        .with_observable::<Variance>()
+        // .with_observable::<Variance>()
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
@@ -80,7 +84,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 10_000;
+    let total_sweeps = 100_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
@@ -191,10 +195,10 @@ async fn app() -> anyhow::Result<()> {
 
     sim.push_metrics();
 
-    // tracing::info!(
-    //     "System thermalised at sweep {:?}",
-    //     sim.stats().thermalised_at
-    // );
+    tracing::info!(
+        "System thermalised at sweep {:?}",
+        sim.stats().thermalised_at
+    );
 
     Ok(())
 }

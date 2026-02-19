@@ -1,5 +1,6 @@
 //! Implementations of basic observables.
 
+use std::any::Any;
 use crate::observable::*;
 
 use crate::observable::{MeasureFrequency, Observable, ObservableState};
@@ -9,32 +10,39 @@ use crate::sim::{System, SystemData};
 pub struct MeanValue;
 
 impl Observable for MeanValue {
-    type Output = f64;
     type State = MeanValueState;
 
     const NAME: &'static str = "mean_value";
+
+    fn new_state() -> Self::State {
+        MeanValueState { data: Vec::new() }
+    }
 }
 
 pub struct MeanValueState {
     data: Vec<f64>
 }
 
-impl ObservableMeasure for MeanValueState {
+impl ObservableState for MeanValueState {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn frequency(&self) -> MeasureFrequency {
+        MeasureFrequency::Sweep(1)
+    }
+
+    fn burn_in(&self) -> bool {
+        false
+    }
+
     fn measure(&mut self, data: &SystemData) {
         let mean = data.lattice.mean();
         self.data.push(mean);
     }
-}
-
-impl ObservableState for MeanValueState {
-    const FREQUENCY: MeasureFrequency = MeasureFrequency::Sweep(1);
 
     fn measured(&self) -> Option<f64> {
         self.data.last().copied()
-    }
-
-    fn init() -> Self {
-        Self { data: Vec::new() }
     }
 
     fn clear(&mut self) {
@@ -50,32 +58,39 @@ impl ObservableState for MeanValueState {
 pub struct Variance;
 
 impl Observable for Variance {
-    type Output = f64;
     type State = VarianceState;
 
     const NAME: &'static str = "variance";
+
+    fn new_state() -> Self::State {
+        VarianceState { data: Vec::new() }
+    }
 }
 
 pub struct VarianceState {
     data: Vec<f64>
 }
 
-impl ObservableMeasure for VarianceState {
-    fn measure(&mut self, data: &SystemData) {
-        let var = data.lattice.variance();
-        self.data.push(var);
+impl ObservableState for VarianceState {
+    fn as_any(&self) -> &dyn Any {
+        self
     }
-}
 
-impl ObservableState<f64> for VarianceState {
-    const FREQUENCY: MeasureFrequency = MeasureFrequency::Sweep(1);
+    fn frequency(&self) -> MeasureFrequency {
+        MeasureFrequency::Sweep(1)
+    }
+
+    fn burn_in(&self) -> bool {
+        false
+    }
+
+    fn measure(&mut self, data: &SystemData) {
+        let mean = data.lattice.variance();
+        self.data.push(mean);
+    }
 
     fn measured(&self) -> Option<f64> {
         self.data.last().copied()
-    }
-
-    fn init() -> Self {
-        Self { data: Vec::new() }
     }
 
     fn clear(&mut self) {

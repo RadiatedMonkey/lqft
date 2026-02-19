@@ -246,6 +246,7 @@ pub fn plot_observable(desc: GraphDesc, sim: &System) -> anyhow::Result<()> {
 use prometheus::Encoder;
 use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
+use crate::observable_impl::{MeanValue, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     let inc = new_value - ctr.get();
@@ -338,43 +339,39 @@ impl MetricState {
 
 impl System {
     pub fn push_metrics(&mut self) {
+        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
+        self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
+
         let metrics = &mut self.metrics;
 
-        // set_int_to(&metrics.total_moves, self.data.total_moves.load(Ordering::SeqCst));
-        // set_int_to(&metrics.accepted_moves, self.data.accepted_moves.load(Ordering::SeqCst));
-        //
-        // let mean = *self.data.mean_history.last().unwrap();
-        // let meansq = *self.data.meansq_history.last().unwrap();
-        //
-        // metrics.mean.set(mean);
-        // metrics.meansq.set(meansq);
-        // metrics.var.set(meansq - mean.pow(2));
-        //
-        // let accept_ratio = *self.data.accept_ratio_history.last().unwrap();
-        // metrics.accept_ratio.set(accept_ratio);
-        //
-        // let progress = self.data.current_sweep as f64 / self.data.desired_sweeps as f64;
-        // metrics.progress.set(progress);
-        //
-        // metrics.step_size.set(self.current_step_size.load(Ordering::Relaxed));
-        // metrics.action.set(self.data.current_action.load(Ordering::Relaxed));
-        //
-        // set_int_to(&metrics.performed_measurements, self.data.performed_measurements as u64);
-        //
-        // let sweep_time = *self.data.sweep_time_history.last().unwrap();
-        // metrics.sweep_time.set(sweep_time as f64);
-        //
-        // let stats_time = *self.data.stats_time_history.last().unwrap();
-        // metrics.stats_time.set(stats_time as f64);
-        //
-        // let therm_ratio = self.data.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
-        // metrics.therm_ratio.set(therm_ratio);
-        //
-        // set_int_to(&metrics.completed_sweeps, self.data.current_sweep as u64 + 1);
-        //
-        // if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.thermalised_at {
-        //     metrics.thermalised_at.inc_by(sweep as u64);
-        // }
+        set_int_to(&metrics.total_moves, self.data.stats.total_moves.load(Ordering::SeqCst));
+        set_int_to(&metrics.accepted_moves, self.data.stats.accepted_moves.load(Ordering::SeqCst));
+
+        let accept_ratio = *self.data.stats.accept_ratio_history.last().unwrap();
+        metrics.accept_ratio.set(accept_ratio);
+
+        let progress = self.data.stats.current_sweep as f64 / self.data.stats.desired_sweeps as f64;
+        metrics.progress.set(progress);
+
+        metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
+        metrics.action.set(self.data.stats.current_action.load(Ordering::Relaxed));
+
+        set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
+
+        let sweep_time = *self.data.stats.sweep_time_history.last().unwrap();
+        metrics.sweep_time.set(sweep_time as f64);
+
+        let stats_time = *self.data.stats.stats_time_history.last().unwrap();
+        metrics.stats_time.set(stats_time as f64);
+
+        let therm_ratio = self.data.stats.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
+        metrics.therm_ratio.set(therm_ratio);
+
+        set_int_to(&metrics.completed_sweeps, self.data.stats.current_sweep as u64 + 1);
+
+        if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.stats.thermalised_at {
+            metrics.thermalised_at.inc_by(sweep as u64);
+        }
 
         metrics.sys.refresh_all();
         if let Some(proc) = metrics.sys.process(metrics.pid) {

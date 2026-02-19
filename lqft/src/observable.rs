@@ -9,7 +9,7 @@ use nohash_hasher::NoHashHasher;
 use crate::sim::{System, SystemData};
 
 pub struct ObservableRegistry {
-    map: HashMap<TypeId, Box<dyn ObservableMeasure>, BuildHasherDefault<NoHashHasher<u64>>>,
+    map: HashMap<TypeId, Box<dyn ObservableState>, BuildHasherDefault<NoHashHasher<u64>>>,
 }
 
 impl ObservableRegistry {
@@ -21,33 +21,35 @@ impl ObservableRegistry {
     }
 
     pub fn measure(&mut self, data: &SystemData) {
-        self.map.par_iter_mut().for_each(|(k, v)| {
-            v.measure(data)
+        self.map.par_iter_mut().for_each(|(_k, v)| {
+            if v.should_measure(data) {
+                v.measure(data);
+            }
         })
     }
 
     pub fn register<O: Observable>(&mut self) {
-        self.map.insert(TypeId::of::<O::State>(), Box::new(O::State::init()));
+        self.map.insert(TypeId::of::<O>(), Box::new(O::new_state()));
     }
 
     /// Retrieves the state of the given observable.
     pub fn get<O: Observable>(&self) -> Option<&O::State> {
         self.map.get(&TypeId::of::<O>()).map(|boxed| {
-            let any = boxed as &dyn Any;
-            any.downcast_ref::<O::State>()
+            let any = boxed.as_any();
+            boxed.as_any().downcast_ref::<O::State>()
         }).flatten()
     }
 
     /// Mutably retrieves the state of the given observable.
     pub fn get_mut<O: Observable>(&mut self) -> Option<&mut O::State> {
         self.map.get_mut(&TypeId::of::<O>()).map(|boxed| {
-            let any = boxed as &mut dyn Any;
-            any.downcast_mut::<O::State>()
+            // boxed.as_any_mut().downcast_mut::<O::State>()
+            todo!()
         }).flatten()
     }
 
     /// Retrieves the last measured value of the observable.
-    pub fn measured<O: Observable>(&self) -> Option<O::Output> {
+    pub fn measured<O: Observable>(&self) -> Option<f64> {
         let obs = self.get::<O>()?;
         obs.measured()
     }
@@ -55,39 +57,52 @@ impl ObservableRegistry {
 
 /// When to perform measurements.
 pub enum MeasureFrequency {
+    Once,
     /// Every `n` autocorrelation times.
     Autocorrelation(usize),
     /// Every `n` sweeps.
-    Sweep(usize),
-
+    Sweep(usize)
 }
 
-/// General functionality that is independent of measurement type.
-pub trait ObservableMeasure: Send + Sync + 'static {
-    /// Makes a new measurement.
-    fn measure(&mut self, data: &SystemData);
-}
+// trait AsAny: Any {
+//     fn as_any(&self) -> &dyn Any;
+//     fn as_any_mut(&mut self) -> &mut dyn Any;
+// }
+//
+// impl<T: Any> AsAny for T {
+//     fn as_any(&self) -> &dyn Any { self }
+//     fn as_any_mut(&mut self) -> &mut dyn Any { self }
+// }
 
 /// Information specific to certain measurement types.
-pub trait ObservableState<O: Copy = f64>: ObservableMeasure {
+pub trait ObservableState: Send + Sync + 'static {
+    fn as_any(&self) -> &dyn Any;
+
     /// Approximate frequency of measurements.
-    const FREQUENCY: MeasureFrequency;
+    fn frequency(&self) -> MeasureFrequency;
+    /// Whether this observable requires thermalisation.
+    fn burn_in(&self) -> bool { true }
+
+    /// Makes a new measurement.
+    fn measure(&mut self, data: &SystemData);
 
     /// Determines whether the observables should be measured.
     ///
     /// By default this follows the frequency defined in [`FREQUENCY`](Self::FREQUENCY).
     fn should_measure(&self, data: &SystemData) -> bool {
-        match Self::FREQUENCY {
+        if self.burn_in() && !data.stats.thermalised_at.is_some() {
+            return false
+        }
+
+        match self.frequency() {
             MeasureFrequency::Autocorrelation(_) => todo!(),
-            MeasureFrequency::Sweep(n) => data.stats.current_sweep % n == 0
+            MeasureFrequency::Sweep(n) => data.stats.current_sweep % n == 0,
+            MeasureFrequency::Once => panic!("One-time observables should have a custom `should_measure` implementation")
         }
     }
 
     /// Returns the last measured quantity.
-    fn measured(&self) -> Option<O>;
-
-    /// Creates a new state.
-    fn init() -> Self;
+    fn measured(&self) -> Option<f64>;
 
     /// Clears the observable's state.
     fn clear(&mut self);
@@ -98,9 +113,10 @@ pub trait ObservableState<O: Copy = f64>: ObservableMeasure {
 }
 
 pub trait Observable: 'static {
-    type Output: Copy;
-    type State: ObservableState<Self::Output>;
+    type State: ObservableState;
 
     /// Name of the observable.
     const NAME: &'static str;
+
+    fn new_state() -> Self::State;
 }
