@@ -74,8 +74,45 @@ impl System {
 // SYSTEMBUILDER
 // ##########################################################################################################
 
+/// The method used to collect (simple) lattice data.
+///
+/// This concerns data that requires iterating over the entire lattice. These are statistics
+/// such as the lattice mean and variance.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LatticeIterMethod {
+    /// Computes lattice data on a single thread.
+    ///
+    /// For smaller lattices this method is preferred due to the overhead of the parallel iterator.
+    /// Larger lattices (40 x 20^3 or bigger) will benefit from the [`Parallel`](Self::Parallel)
+    /// method.
+    Sequential,
+    /// Uses as many threads as possible to compute lattice data.
+    ///
+    /// For larger lattice sizes (e.g. 40 x 20^3 or bigger) this method is much faster than
+    /// [`Sequential`](Self::Sequential). Despite this, the sequential method should be used
+    /// for smaller lattices due to the initial overhead of the parallel iterator.
+    Parallel
+}
+
+/// Describes settings dedicated to performance.
+#[derive(Debug, Clone)]
+pub struct PerformanceDesc {
+    /// The iteration method to use for lattice data.
+    ///
+    /// Default: [`Parallel`](LatticeIterMethod::Parallel).
+    pub lattice_iter: LatticeIterMethod
+}
+
+impl Default for PerformanceDesc {
+    fn default() -> Self {
+        Self {
+            lattice_iter: LatticeIterMethod::Parallel
+        }
+    }
+}
+
 /// Which method to use for flushing snapshots fragments.
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FlushMethod {
     /// Saves all fragments sequentially. This uses less RAM but is much slower.
     Sequential,
@@ -112,7 +149,7 @@ impl Default for LatticeCreateDesc {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotLocation {
     /// A direct link to a specific snapshot.
     Direct(String),
@@ -227,7 +264,7 @@ pub enum InitialState {
 }
 
 /// The type of snapshots to take.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SnapshotType {
     /// Store every `n` sweeps
     Interval(usize),
@@ -297,6 +334,7 @@ impl Default for ParamDesc {
 
 /// Used to configure a lattice simulation.
 pub struct SystemBuilder {
+    performance_desc: PerformanceDesc,
     observables: ObservableRegistry,
     param_desc: ParamDesc,
     lattice_desc: LatticeDesc,
@@ -315,6 +353,7 @@ impl SystemBuilder {
             param_desc: ParamDesc::default(),
             acceptance_desc: AcceptanceDesc::default(),
             burn_in_desc: BurnInDesc::default(),
+            performance_desc: PerformanceDesc::default()
         }
     }
 
@@ -365,6 +404,14 @@ impl SystemBuilder {
         self
     }
 
+    /// Sets the performance configuration.
+    ///
+    /// See [`PerformanceDesc`] for more information.
+    pub fn with_performance(mut self, desc: PerformanceDesc) -> Self {
+        self.performance_desc = desc;
+        self
+    }
+
     /// Sets the physical constants.
     ///
     /// See [`ParamDesc`] for more information.
@@ -378,8 +425,8 @@ impl SystemBuilder {
         tracing::info!("Finished configuration, building simulation...");
 
         let lattice = match self.lattice_desc {
-            LatticeDesc::Create(desc) => Lattice::new(desc),
-            LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot)?,
+            LatticeDesc::Create(desc) => Lattice::new(desc, self.performance_desc.lattice_iter),
+            LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot, self.performance_desc.lattice_iter)?,
         };
 
         let snapshot_state = self

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
 members = [
-    "lqft",
+    "lqft", "lqft-benches",
     "lqft-derive"
 ]
+
+[profile.release]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+#lto = "fat"
+incremental = false
+codegen-units = 16

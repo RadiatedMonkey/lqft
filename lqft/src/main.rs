@@ -9,11 +9,7 @@ mod stats;
 mod metrics;
 mod observable_impl;
 
-use crate::setup::{
-    AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc,
-    LatticeLoadDesc, ParamDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder,
-};
-use crate::metrics::{GraphData, GraphDesc, plot_observable};
+use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
 use std::process::ExitCode;
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
@@ -63,11 +59,9 @@ async fn app() -> anyhow::Result<()> {
             // initial_state: InitialState::Fixed(0.0),
             spacing: 1.0,
         }))
-        // .with_lattice(LatticeDesc::Load(LatticeLoadDesc {
-        //     hdf5_file: String::from("snapshots/snapshots.h5"),
-        //     location: SnapshotLocation::Latest(String::from("snapshots")),
-        //     spacing: 1.0,
-        // })
+        .with_performance(PerformanceDesc {
+            lattice_iter: LatticeIterMethod::Parallel
+        })
         .with_observable::<MeanValue>()
         // .with_observable::<Variance>()
         .with_acceptance(AcceptanceDesc {

@@ -1,0 +1,13 @@
+[package]
+name = "lqft-benches"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+criterion = "0.8.2"
+rand = "0.10.0"
+rayon = "1.11.0"
+
+[[bench]]
+name = "par_sum"
+harness = false

@@ -37,7 +37,7 @@ impl ObservableState for MeanValueState {
     }
 
     fn measure(&mut self, data: &SystemData) {
-        let mean = data.lattice.mean();
+        let mean = data.lattice.mean_seq();
         self.data.push(mean);
     }
 

@@ -65,7 +65,7 @@ impl System {
         sweep: usize,
         total_sweeps: usize,
     ) -> anyhow::Result<()> {
-        let mean = self.data.lattice.mean();
+        let mean = self.data.lattice.mean_seq();
         let meansq = self.data.lattice.meansq();
         let action = self.data.stats.current_action.load(Ordering::Acquire);
 
@@ -96,7 +96,7 @@ impl System {
 
             if should_snapshot {
                 if sweep == total_sweeps - 1 {
-                    tracing::info!("Last sweep avg is: {}", self.data.lattice.mean());
+                    tracing::info!("Last sweep avg is: {}", self.data.lattice.mean_seq());
                 }
 
                 let clone = unsafe { self.data.lattice.clone() };

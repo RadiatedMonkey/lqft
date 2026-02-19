@@ -1,40 +1,43 @@
-use crate::setup::{
-    InitialState, LatticeCreateDesc, LatticeDesc, LatticeLoadDesc, SnapshotLocation,
-};
+use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
 use anyhow::Context;
 use hdf5_metno as hdf5;
 use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
 use num_traits::Pow;
 use rand::{Rng, RngExt};
 use std::cell::UnsafeCell;
-use std::ops::Index;
+use std::ops::{Deref, Index};
 use std::ops::Range;
 use std::str::FromStr;
+
+use rayon::prelude::*;
 
 /// 2 adjacent indices in each dimension.
 type AdjacentIndices = [usize; 8];
 
 pub struct Lattice {
-    pub(crate) sites: Vec<UnsafeCell<f64>>,
+    iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
     adjacency: Vec<AdjacentIndices>,
+
+    red_sites: UnsafeCell<Vec<f64>>,
+    black_sites: UnsafeCell<Vec<f64>>
 }
 
 unsafe impl Send for Lattice {}
 unsafe impl Sync for Lattice {}
 
 impl Lattice {
-    pub fn new(desc: LatticeCreateDesc) -> Self {
+    pub fn new(desc: LatticeCreateDesc, iter_method: LatticeIterMethod) -> Self {
         match desc.initial_state {
-            InitialState::Fixed(val) => Lattice::filled(desc.dimensions, desc.spacing, val),
+            InitialState::Fixed(val) => Lattice::filled(desc.dimensions, desc.spacing, iter_method, val),
             InitialState::RandomRange(range) => {
-                Lattice::random(desc.dimensions, desc.spacing, range)
+                Lattice::random(desc.dimensions, desc.spacing, iter_method, range)
             }
         }
     }
 
-    pub fn from_snapshot(desc: LatticeLoadDesc) -> anyhow::Result<Self> {
+    pub fn from_snapshot(desc: LatticeLoadDesc, iter_method: LatticeIterMethod) -> anyhow::Result<Self> {
         let file = hdf5::File::open(desc.hdf5_file).context("Unable to open snapshots file")?;
 
         let set = match desc.location {
@@ -96,7 +99,7 @@ impl Lattice {
             .context("Unable to read dataset")?;
         let raw_sites: ArrayView4<f64> = raw_slice.slice(ndarray::s![0, .., .., .., ..]);
 
-        let lattice = Lattice::from_view(raw_sites, desc.spacing);
+        let lattice = Lattice::from_view(raw_sites, desc.spacing, iter_method);
         tracing::info!(
             "Loaded lattice of dimensions {} x {} x {} x {} from file \"{}\"",
             set_shape[1],
@@ -111,7 +114,7 @@ impl Lattice {
         Ok(lattice)
     }
 
-    pub fn from_view(view: ArrayView4<f64>, spacing: f64) -> Self {
+    pub fn from_view(view: ArrayView4<f64>, spacing: f64, iter_method: LatticeIterMethod) -> Self {
         let dimensions: (usize, usize, usize, usize) = view.dim();
         let dimensions: [usize; 4] = dimensions.into();
 
@@ -122,7 +125,8 @@ impl Lattice {
             .collect::<Vec<_>>();
 
         let mut lattice = Lattice {
-            sites,
+            iter_method,
+            red_sites, black_sites,
             adjacency: Vec::new(),
             dimensions,
             spacing,
@@ -133,16 +137,19 @@ impl Lattice {
     }
 
     pub unsafe fn clone(&self) -> Self {
-        let orig = &self.sites;
-        let mut cloned = Vec::with_capacity(orig.len());
+        let red_clone = unsafe {
+            let sites = &*self.red_sites.get();
+            sites.clone()
+        };
 
-        unsafe {
-            std::ptr::copy_nonoverlapping(orig.as_ptr(), cloned.as_mut_ptr(), orig.len());
-            cloned.set_len(orig.len());
-        }
+        let black_clone = unsafe {
+            let sites = &*self.black_sites.get();
+            sites.clone()
+        };
 
         Self {
-            sites: cloned,
+            iter_method: self.iter_method,
+            red_sites: UnsafeCell::new(red_clone), black_sites: UnsafeCell::new(black_clone),
             dimensions: self.dimensions,
             spacing: self.spacing,
             adjacency: self.adjacency.clone(),
@@ -155,7 +162,7 @@ impl Lattice {
     }
 
     /// Returns odd and even indices.
-    pub fn generate_checkerboard(&self) -> (Vec<usize>, Vec<usize>) {
+    pub fn generate_checkerboard_indices(&self) -> (Vec<usize>, Vec<usize>) {
         let [st, sx, sy, sz] = self.dimensions;
         let stotal: usize = self.dimensions.iter().sum();
 
@@ -238,33 +245,100 @@ impl Lattice {
         self.dimensions[3]
     }
 
-    /// Computes the mean of the lattice
+    unsafe fn red_sites(&self) -> &[f64] {
+        unsafe { &*self.red_sites.get() }
+    }
+
+    unsafe fn black_sites(&self) -> &[f64] {
+        unsafe { &*self.black_sites.get() }
+    }
+
     pub fn mean(&self) -> f64 {
-        let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
-        sum / self.sites.len() as f64
+        match self.iter_method {
+            LatticeIterMethod::Sequential => self.mean_seq(),
+            LatticeIterMethod::Parallel => self.mean_par()
+        }
     }
 
-    /// Computes the variance of the lattice
+    /// Sequentially computes the mean of the lattice
+    #[inline]
+    pub fn mean_seq(&self) -> f64 {
+        // let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
+        // sum / self.sites.len() as f64
+
+        let red_sum = unsafe { self.red_sites() }.iter().sum::<f64>();
+        let black_sum = unsafe { self.black_sites() }.iter().sum::<f64>();
+
+        (red_sum + black_sum) / self.sweep_size() as f64
+    }
+
+    /// Computes the mean of the lattice in parallel.
+    #[inline]
+    pub fn mean_par(&self) -> f64 {
+        let red_sum = unsafe { self.red_sites() }.par_iter().sum::<f64>();
+        let black_sum = unsafe { self.black_sites() }.par_iter().sum::<f64>();
+
+        (red_sum + black_sum) / self.sweep_size() as f64
+    }
+
     pub fn meansq(&self) -> f64 {
-        let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
-        sum / self.sites.len() as f64
+        match self.iter_method {
+            LatticeIterMethod::Sequential => self.meansq_seq(),
+            LatticeIterMethod::Parallel => self.meansq_par()
+        }
     }
 
-    /// Computes the variance of the lattice.
+    /// Sequentially computes the mean squared of the lattice
+    #[inline]
+    pub fn meansq_seq(&self) -> f64 {
+        // let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
+        // sum / self.sites.len() as f64
+
+        let red_sum = unsafe { self.red_sites() }.iter().map(|x| x * x).sum::<f64>();
+        let black_sum = unsafe { self.black_sites() }.iter().map(|x| x * x).sum::<f64>();
+
+        (red_sum + black_sum) / self.sweep_size() as f64
+    }
+
+    #[inline]
+    /// Computes the mean squared of the lattice in parallel
+    pub fn meansq_par(&self) -> f64 {
+        let red_sum = unsafe { self.red_sites() }.par_iter().map(|x| x * x).sum::<f64>();
+        let black_sum = unsafe { self.black_sites() }.par_iter().map(|x| x * x).sum::<f64>();
+
+        (red_sum + black_sum) / self.sweep_size() as f64
+    }
+
     pub fn variance(&self) -> f64 {
-        self.meansq() - self.mean().pow(2)
+        match self.iter_method {
+            LatticeIterMethod::Sequential => self.variance_seq(),
+            LatticeIterMethod::Parallel => self.variance_par()
+        }
     }
 
-    pub fn filled(dimensions: [usize; 4], spacing: f64, fill_value: f64) -> Self {
-        let [t, x, y, z] = dimensions;
-        let mut sites = Vec::with_capacity(t * x * y * z);
+    /// Sequentially computes the variance of the lattice.
+    #[inline]
+    pub fn variance_seq(&self) -> f64 {
+        let mean = self.mean_seq();
+        self.meansq_seq() - mean * mean
+    }
 
-        for _ in 0..(t * x * y * z) {
-            sites.push(UnsafeCell::new(fill_value));
-        }
+    #[inline]
+    /// Computes the variance of the lattice in parallel.
+    pub fn variance_par(&self) -> f64 {
+        let mean = self.mean_par();
+        self.meansq_par() - mean * mean
+    }
+
+    /// Fills the data with a fixed value.
+    pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
+        let count = dimensions.iter().product::<usize>().div_ceil(2);
+        let red_sites = UnsafeCell::new(vec![fill_value; count]);
+        let black_sites = UnsafeCell::new(vec![fill_value; count]);
 
         let mut lattice = Self {
-            sites,
+            iter_method,
+            red_sites, black_sites,
             spacing,
             dimensions,
             adjacency: Vec::new(),
@@ -274,44 +348,33 @@ impl Lattice {
         lattice
     }
 
-    pub fn zeroed(dimensions: [usize; 4], spacing: f64) -> Self {
-        let [t, x, y, z] = dimensions;
-        tracing::debug!("Generating zeroed scalar lattice of dimensions {t} x {x} x {y} x {z}...");
-
-        let mut sites = Vec::with_capacity(t * x * y * z);
-        for _ in 0..(t * x * y * z) {
-            sites.push(UnsafeCell::new(0.0));
-        }
-
-        tracing::debug!("Generated zeroed scalar lattice");
-
-        let mut lattice = Self {
-            sites,
-            spacing,
-            dimensions,
-            adjacency: Vec::new(),
-        };
-        lattice.generate_adjacency();
-
-        lattice
+    /// Fills the data with zeroes.
+    #[inline]
+    pub fn zeroed(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod) -> Self {
+        Self::filled(dimensions, spacing, iter_method, 0.0)
     }
 
-    pub fn random(dimensions: [usize; 4], spacing: f64, range: Range<f64>) -> Self {
+    /// Fills the lattice with random data from a range.
+    pub fn random(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
         let [t, x, y, z] = dimensions;
         tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
 
-        let total_size = dimensions.iter().product();
-        let mut sites = Vec::with_capacity(total_size);
+        let count = dimensions.iter().product::<usize>().div_ceil(2);
         let mut rng = rand::rng();
 
-        for _ in 0..total_size {
-            sites.push(UnsafeCell::new(rng.random_range(range.clone())));
-        }
+        // Seems like I need to clone `range` because the map function can only capture it once.
+        let red_sites = (0..count)
+            .map(|_| rng.random_range(range.clone()))
+            .collect::<Vec<_>>();
 
-        tracing::debug!("Generated random scalar lattice");
+        let black_sites = (0..count)
+            .map(|_| rng.random_range(range.clone()))
+            .collect::<Vec<_>>();
 
         let mut lattice = Self {
-            sites,
+            iter_method,
+            red_sites: UnsafeCell::new(red_sites),
+            black_sites: UnsafeCell::new(black_sites),
             spacing,
             dimensions,
             adjacency: Vec::new(),
@@ -385,23 +448,28 @@ impl Lattice {
 
         [t, x, y, z]
     }
-}
 
-impl Index<usize> for Lattice {
-    type Output = UnsafeCell<f64>;
-
-    fn index(&self, i: usize) -> &Self::Output {
-        &self.sites[i]
+    #[inline]
+    fn is_red(&self, coord: [usize; 4]) -> bool {
+        coord.iter().sum::<usize>() % 2 == 0
     }
 }
 
-impl Index<[usize; 4]> for Lattice {
-    type Output = UnsafeCell<f64>;
-
-    fn index(&self, pos: [usize; 4]) -> &Self::Output {
-        &self.sites[self.to_index(pos)]
-    }
-}
+// impl Index<usize> for Lattice {
+//     type Output = UnsafeCell<f64>;
+//
+//     fn index(&self, i: usize) -> &Self::Output {
+//         &self.sites[i]
+//     }
+// }
+//
+// impl Index<[usize; 4]> for Lattice {
+//     type Output = UnsafeCell<f64>;
+//
+//     fn index(&self, pos: [usize; 4]) -> &Self::Output {
+//         &self.sites[self.to_index(pos)]
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
@@ -411,7 +479,7 @@ mod tests {
     #[test]
     fn lattice_index_map_test() {
         let dimensions = [5, 7, 13, 22];
-        let lattice = Lattice::zeroed(dimensions, 1.0);
+        let lattice = Lattice::zeroed(dimensions, 1.0, LatticeIterMethod::Sequential);
 
         for i in 0..dimensions.iter().product() {
             let coords = lattice.from_index(i);
@@ -429,7 +497,7 @@ mod tests {
     #[test]
     fn lattice_boundary_wrap_test() {
         let dimensions = [5, 7, 13, 22];
-        let lattice = Lattice::zeroed(dimensions, 1.0);
+        let lattice = Lattice::zeroed(dimensions, 1.0, LatticeIterMethod::Sequential);
 
         for (i, v) in dimensions.iter().enumerate() {
             let mut start = [0; 4];

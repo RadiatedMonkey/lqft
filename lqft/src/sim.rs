@@ -90,7 +90,7 @@ impl System {
     /// Since many QFTs interact with direct neighbours only, this allows all sites of a single colour to be updated
     /// simultaneously rather than sequentially.
     ///
-    /// We first divide the lattice into a colours using [`generate_checkerboard`](Lattice::generate_checkerboard).
+    /// We first divide the lattice into a colours using [`generate_checkerboard`](Lattice::generate_checkerboard_indices).
     /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
     /// using the Metropolis algorithm.
     ///
@@ -108,7 +108,7 @@ impl System {
         self.data.stats.reserve_capacity(total_sweeps);
         self.data.correlation_slices
             .resize(self.data.lattice.dimensions()[0], 0.0);
-        let (red, black) = self.data.lattice.generate_checkerboard();
+        let (red, black) = self.data.lattice.generate_checkerboard_indices();
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
