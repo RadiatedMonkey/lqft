@@ -1,12 +1,13 @@
 #![feature(portable_simd)]
 
 use std::cell::UnsafeCell;
-use std::simd::{f64x4, f64x8, Select, StdFloat};
+use std::simd::{f64x4, f64x8, u64x8, Select, StdFloat, ToBytes};
 use std::simd::cmp::SimdPartialOrd;
+use std::simd::num::SimdFloat;
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::RngExt;
 use rand::rngs::Xoshiro256PlusPlus;
-use rand_xoshiro::rand_core::SeedableRng;
+use rand_xoshiro::rand_core::{Rng, SeedableRng};
 use rayon::prelude::*;
 
 struct SyncWrapper(pub Vec<UnsafeCell<f64>>);
@@ -176,8 +177,8 @@ fn simd_flip(lattice: &mut ColoredLattice) {
         |rng, chunk| {
             let curr = f64x8::from_slice(chunk);
 
-            let mut rand_vals = [0.0f64; LANES];
             let mut probs = [0.0f64; LANES];
+            let mut rand_vals = [0.0f64; LANES];
 
             for i in 0..LANES {
                 rand_vals[i] = rng.random_range(-0.5..0.5);
@@ -185,6 +186,78 @@ fn simd_flip(lattice: &mut ColoredLattice) {
             }
 
             let offset = f64x8::from_array(rand_vals);
+            let realized = f64x8::from_array(probs);
+            let new_val = curr + offset;
+
+            let prob_threshold = (curr - new_val).exp();
+            let mask = realized.simd_gt(prob_threshold);
+            let result = mask.select(new_val, curr);
+
+            result.copy_to_slice(chunk);
+        }
+    );
+}
+
+fn simd_flip2(lattice: &mut ColoredLattice) {
+    let red = &mut lattice.red;
+    red.par_chunks_mut(LANES).for_each_init(
+        || {
+            let mut rng = rand::rng();
+            Xoshiro256PlusPlus::from_rng(&mut rng)
+        },
+        |rng, chunk| {
+            let curr = f64x8::from_slice(chunk);
+
+            let mut rand_bytes = [0u8; LANES * 8];
+            let mut probs = [0.0f64; LANES];
+
+            for i in 0..LANES {
+                probs[i] = rng.random_range(0.0..1.0);
+            }
+            
+            rng.fill_bytes(&mut rand_bytes);
+
+            let uoffset = u64x8::from_ne_bytes(rand_bytes.into());
+            let bits = uoffset >> 12;
+            let exp_bits = u64x8::splat(0x3FF0_0000_0000_0000);
+            let float_bits = bits | exp_bits;
+            let norm_rand = f64x8::from_bits(float_bits) - f64x8::splat(1.0);
+
+            let max_range = f64x8::splat(0.5);
+            let max2_range = f64x8::splat(1.0);
+
+            let offset = (norm_rand * max2_range) - max_range;
+
+            let realized = f64x8::from_array(probs);
+            let new_val = curr + offset;
+
+            let prob_threshold = (curr - new_val).exp();
+            let mask = realized.simd_gt(prob_threshold);
+            let result = mask.select(new_val, curr);
+
+            result.copy_to_slice(chunk);
+        }
+    );
+
+    let black = &mut lattice.black;
+    black.par_chunks_mut(LANES).for_each_init(
+        || {
+            let mut rng = rand::rng();
+            Xoshiro256PlusPlus::from_rng(&mut rng)
+        },
+        |rng, chunk| {
+            let curr = f64x8::from_slice(chunk);
+
+            let mut probs = [0.0f64; LANES];
+
+            let mut rand_bytes = [0u8; LANES * 8];
+            rng.fill_bytes(&mut rand_bytes);
+
+            for i in 0..LANES {
+                probs[i] = rng.random_range(0.0..1.0);
+            }
+
+            let offset = f64x8::from_ne_bytes(rand_bytes.into());
             let realized = f64x8::from_array(probs);
             let new_val = curr + offset;
 
@@ -247,9 +320,10 @@ fn flip_benchmark(c: &mut Criterion) {
     };
 
     group.bench_function("old_flip", |b| b.iter(|| old_flip(&mut global)));
-    group.bench_function("global_flip", |b| b.iter(|| reg_flip(&mut global)));
-    group.bench_function("contig_flip", |b| b.iter(|| contig_flip(&mut colored)));
+    // group.bench_function("global_flip", |b| b.iter(|| reg_flip(&mut global)));
+    // group.bench_function("contig_flip", |b| b.iter(|| contig_flip(&mut colored)));
     group.bench_function("simd_flip", |b| b.iter(|| simd_flip(&mut colored)));
+    group.bench_function("simd_rand_flip", |b| b.iter(|| simd_flip2(&mut colored)));
 
     group.finish();
 }
