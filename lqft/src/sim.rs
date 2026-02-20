@@ -121,52 +121,29 @@ impl System {
 
             // First update red sites....
             self.simulating.store(true, Ordering::SeqCst);
-            red.par_iter().for_each_init(
+            
+            let mut red_sites = unsafe { &mut *self.data.lattice.red_sites.get() };
+            red_sites.par_iter_mut().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-
-                    // rand::rng()
                 },
-                |rng, &index| {
-                    // SAFETY: Since this is a red site, this thread has exclusive access to the site.
-                    // Therefore it can safely update the value.
-                    unsafe {
-                        let new_site = self.checkerboard_site_flip(rng, index);
-                        *self.data.lattice[index].get() = new_site;
-                    };
-
-                    let index = index as u64;
-                    if index % self.data.acceptance_desc.correction_interval == 0 && !self.thermalised()
-                    {
-                        self.correct_step_size();
-                    }
-                },
+                |rng, site| {
+                    
+                }
             );
-
-            // then black sites.
-            black.par_iter().for_each_init(
+            
+            let mut black_sites = unsafe { &mut *self.data.lattice.black_sites.get() };
+            black_sites.par_iter_mut().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-
-                    // rand::rng()
                 },
-                |rng, &index| {
-                    // SAFETY: Since this is a black site, this thread has exclusive access to the site.
-                    // Therefore it can safely update the value.
-                    unsafe {
-                        let new_site = self.checkerboard_site_flip(rng, index);
-                        *self.data.lattice[index].get() = new_site;
-                    }
-
-                    let index = index as u64;
-                    if index % self.data.acceptance_desc.correction_interval == 0 && !self.thermalised()
-                    {
-                        self.correct_step_size();
-                    }
-                },
+                |rng, site| {
+                    
+                }
             );
+            
             self.simulating.store(false, Ordering::SeqCst);
 
             let sweep_time = sweep_timer.elapsed();

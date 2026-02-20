@@ -20,8 +20,8 @@ pub struct Lattice {
     dimensions: [usize; 4],
     adjacency: Vec<AdjacentIndices>,
 
-    red_sites: UnsafeCell<Vec<f64>>,
-    black_sites: UnsafeCell<Vec<f64>>
+    pub(crate) red_sites: UnsafeCell<Vec<f64>>,
+    pub(crate) black_sites: UnsafeCell<Vec<f64>>
 }
 
 unsafe impl Send for Lattice {}
@@ -116,19 +116,32 @@ impl Lattice {
 
     pub fn from_view(view: ArrayView4<f64>, spacing: f64, iter_method: LatticeIterMethod) -> Self {
         let dimensions: (usize, usize, usize, usize) = view.dim();
-        let dimensions: [usize; 4] = dimensions.into();
 
-        let slice = view.as_slice().unwrap();
-        let sites = slice
-            .iter()
-            .map(|&s| UnsafeCell::new(s))
-            .collect::<Vec<_>>();
+        let count = view.len().div_ceil(2);
+        let mut red_sites = vec![0.0; count];
+        let mut black_sites = vec![0.0; count];
+
+        // for t in 0..dimensions.0 {
+        //     for x in 0..dimensions.1 {
+        //         for y in 0..dimensions.2 {
+        //             for z in 0..dimensions.3 {
+        //                 if (t + x + y + z) % 2 == 0 {
+        //                     // Red site
+        //
+        //                 } else {
+        //                     // Black site
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+        todo!();
 
         let mut lattice = Lattice {
             iter_method,
-            red_sites, black_sites,
+            red_sites: UnsafeCell::new(red_sites), black_sites: UnsafeCell::new(black_sites),
             adjacency: Vec::new(),
-            dimensions,
+            dimensions: dimensions.into(),
             spacing,
         };
 
