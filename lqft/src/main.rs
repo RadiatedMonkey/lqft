@@ -54,7 +54,7 @@ async fn app() -> anyhow::Result<()> {
         //     flush_method: FlushMethod::Sequential,
         // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
-            dimensions: [40, 20, 20, 20],
+            dimensions: [2, 2, 2, 2],
             // initial_state: InitialState::RandomRange(-0.1..0.1),
             initial_state: InitialState::Fixed(1.0),
             spacing: 1.0,

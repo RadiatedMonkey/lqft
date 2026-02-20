@@ -440,7 +440,10 @@ impl System {
                 let mass = HALF * msquared * site_vals2;
                 let inter = TFOURTH * coupling * site_vals4;
 
-                a4 * (kinetic + mass + inter)
+                let part = a4 * (kinetic + mass + inter);
+                println!("parts for {i}: {part:?}");
+
+                part
             })
             .reduce(
                 || f64x8::splat(0.0),
