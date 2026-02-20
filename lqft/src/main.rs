@@ -55,8 +55,8 @@ async fn app() -> anyhow::Result<()> {
         // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
             dimensions: [40, 20, 20, 20],
-            initial_state: InitialState::RandomRange(-0.1..0.1),
-            // initial_state: InitialState::Fixed(0.0),
+            // initial_state: InitialState::RandomRange(-0.1..0.1),
+            initial_state: InitialState::Fixed(1.0),
             spacing: 1.0,
         }))
         .with_performance(PerformanceDesc {

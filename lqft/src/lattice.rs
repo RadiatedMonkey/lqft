@@ -115,6 +115,10 @@ impl Lattice {
         Ok(lattice)
     }
 
+    pub fn iter_method(&self) -> LatticeIterMethod {
+        self.iter_method
+    }
+
     pub fn from_view(view: ArrayView4<f64>, spacing: f64, iter_method: LatticeIterMethod) -> Self {
         let dimensions: (usize, usize, usize, usize) = view.dim();
 

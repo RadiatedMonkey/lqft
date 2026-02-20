@@ -152,7 +152,7 @@ impl System {
         const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
         const TWO: usizex8 = usizex8::splat(2);
 
-        let site_idx = (usizex8::splat(idx) + CTR) * TWO;
+        let site_idxs = (usizex8::splat(idx) + CTR) * TWO;
 
         // Generate flip probabilities
         let mut offset = f64x8::splat(0.0);
@@ -174,15 +174,15 @@ impl System {
 
             for i in 0..4 {
                 // FIXME: request actual neighbour indices
-                let fneigh_idxs = find_fneighbors(site_idx, dimensions, i);
-                let bneigh_idxs = find_bneighbors(site_idx, dimensions, i);
+                let fneigh_idxs = find_fneighbors(site_idxs, dimensions, i);
+                let bneigh_idxs = find_bneighbors(site_idxs, dimensions, i);
 
                 let fneigh_vals = f64x8::gather_or_default(neigh_sites, fneigh_idxs / TWO);
                 let bneigh_vals = f64x8::gather_or_default(neigh_sites, bneigh_idxs / TWO);
 
                 {
                     let f1_sqrt = (fneigh_vals - curr_vals) * div_a;
-                    let b1_sqrt = (bneigh_vals - curr_vals) * div_a;
+                    let b1_sqrt = (curr_vals - bneigh_vals) * div_a;
 
                     let f1 = f1_sqrt * f1_sqrt;
                     let b1 = b1_sqrt * b1_sqrt;
@@ -238,6 +238,11 @@ impl System {
     /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
     /// using the Metropolis algorithm.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
+        let action = self.compute_full_action();
+        println!("full action is: {action}");
+
+        return Ok(());
+
         self.data.stats.desired_sweeps = total_sweeps;
 
         if let Some(state) = &mut self.snapshot_state {
@@ -388,35 +393,106 @@ impl System {
 
     /// Computes the absolute action of the entire lattice.
     pub fn compute_full_action(&self) -> f64 {
-        0.0
-        // let mut action = 0.0;
-        // for i in 0..self.data.lattice.sweep_size() {
-        //     let a = self.data.lattice.spacing();
-        //
-        //     let val = unsafe { *self.data.lattice[i].get() };
-        //     let mut der_sum = 0.0;
-        //
-        //     for j in 0..4 {
-        //         // TODO: Create prebuilt adjacency table
-        //         // let orig = self.lattice.from_index(i);
-        //         let fneigh = self.data.lattice.get_forward_neighbor(i, j);
-        //         let bneigh = self.data.lattice.get_backward_neighbor(i, j);
-        //
-        //         // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
-        //         let fneigh_val = unsafe { *self.data.lattice[fneigh].get() };
-        //         let bneigh_val = unsafe { *self.data.lattice[bneigh].get() };
-        //
-        //         der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
-        //     }
-        //
-        //     let kinetic_delta = 0.5 * der_sum;
-        //     let mass_delta = 0.5 * self.data.mass_squared * val.pow(2);
-        //     let interaction_delta = 1.0 / 24.0 * self.data.coupling * val.pow(4);
-        //
-        //     action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
-        // }
-        //
-        // action
+        // TODO: Add sequential version
+
+        let msquared = f64x8::splat(self.mass_squared());
+        let coupling = f64x8::splat(self.coupling());
+        let spacing = f64x8::splat(self.lattice().spacing());
+        let a4 = spacing * spacing * spacing * spacing;
+        let div_a = f64x8::splat(1.0) / spacing;
+        let dims = self.lattice().dimensions();
+
+        // Compute action for red sites
+
+        let black_sites = &self.lattice().black_sites;
+        let action_red = self
+            .data.lattice.red_sites
+            .par_chunks(8)
+            .enumerate()
+            .map(|(i, chunk)| {
+                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+                const TWO: usizex8 = usizex8::splat(2);
+
+                let site_vals = f64x8::from_slice(chunk);
+                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
+
+                let mut der_sum = f64x8::splat(0.0);
+                for i in 0..4 {
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+
+                    let fneigh_vals = f64x8::gather_or_default(black_sites, fneigh_idxs / TWO);
+                    let bneigh_vals = f64x8::gather_or_default(black_sites, bneigh_idxs / TWO);
+
+                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
+                    let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+
+                    der_sum += f1_sqrt * f1_sqrt + b1_sqrt * b1_sqrt;
+                }
+
+                const HALF: f64x8 = f64x8::splat(0.5);
+                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+
+                let site_vals2 = site_vals * site_vals;
+                let site_vals4 = site_vals2 * site_vals2;
+
+                let kinetic = HALF * der_sum;
+                let mass = HALF * msquared * site_vals2;
+                let inter = TFOURTH * coupling * site_vals4;
+
+                a4 * (kinetic + mass + inter)
+            })
+            .reduce(
+                || f64x8::splat(0.0),
+                |a, b| a + b
+            )
+            .reduce_sum();
+
+        let red_sites = &self.lattice().red_sites;
+        let action_black = self
+            .data.lattice.black_sites
+            .par_chunks(8)
+            .enumerate()
+            .map(|(i, chunk)| {
+                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+                const TWO: usizex8 = usizex8::splat(2);
+
+                let site_vals = f64x8::from_slice(chunk);
+                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
+
+                let mut der_sum = f64x8::splat(0.0);
+                for i in 0..4 {
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+
+                    let fneigh_vals = f64x8::gather_or_default(red_sites, fneigh_idxs / TWO);
+                    let bneigh_vals = f64x8::gather_or_default(red_sites, bneigh_idxs / TWO);
+
+                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
+                    let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+
+                    der_sum += f1_sqrt * f1_sqrt + b1_sqrt * b1_sqrt;
+                }
+
+                const HALF: f64x8 = f64x8::splat(0.5);
+                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+
+                let site_vals2 = site_vals * site_vals;
+                let site_vals4 = site_vals2 * site_vals2;
+
+                let kinetic = HALF * der_sum;
+                let mass = HALF * msquared * site_vals2;
+                let inter = TFOURTH * coupling * site_vals4;
+
+                a4 * (kinetic + mass + inter)
+            })
+            .reduce(
+                || f64x8::splat(0.0),
+                |a, b| a + b
+            )
+            .reduce_sum();
+
+        action_red + action_black
     }
 
     fn get_timeslice(&mut self) -> Vec<f64> {
