@@ -141,11 +141,12 @@ fn find_bneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
 
 
 impl System {
+    /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
         rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
         spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
-    ) {
+    ) -> (f64, u64) {
         let curr_vals = f64x8::from_slice(chunk);
 
         // `idx` is only the chunk index, convert the chunk index to 8 site indices.
@@ -165,7 +166,7 @@ impl System {
 
         let new_vals = curr_vals + offset;
 
-        let prob_threshold = {
+        let action_deltas = {
             let mut der_sum = f64x8::splat(0.0);
             let mut new_der_sum = f64x8::splat(0.0);
 
@@ -219,13 +220,18 @@ impl System {
 
             let a4 = a * a * a * a;
 
-            let total_delta = a4 * (kinetic_delta + mass_delta + inter_delta);
-            (-total_delta).exp()
+            a4 * (kinetic_delta + mass_delta + inter_delta)
         };
+
+        let prob_threshold = (-action_deltas).exp();
         let mask = realized.simd_lt(prob_threshold);
         let result = mask.select(new_vals, curr_vals);
+        let total_delta = mask.select(action_deltas, f64x8::splat(0.0)).reduce_sum();
 
         result.copy_to_slice(chunk);
+
+        let accepted_moves: u64 = mask.to_array().iter().map(|&b| b as u64).sum();
+        (total_delta, accepted_moves)
     }
 
     /// Simulates the system using the checkerboard method.
@@ -238,12 +244,12 @@ impl System {
     /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
     /// using the Metropolis algorithm.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
-        let action = self.compute_full_action();
-        println!("full action is: {action}");
-
-        return Ok(());
-
         self.data.stats.desired_sweeps = total_sweeps;
+
+        let action = self.compute_full_action();
+        self.data.stats.current_action.store(action, Ordering::SeqCst);
+
+        tracing::debug!("Starting action is: {action}");
 
         if let Some(state) = &mut self.snapshot_state {
             state.init(self.data.lattice.dimensions(), total_sweeps)?;
@@ -274,6 +280,10 @@ impl System {
 
             let step_size = self.current_step_size();
 
+            let action = &self.data.stats.current_action;
+            let accepted_moves = &self.data.stats.accepted_moves;
+            let total_moves = &self.data.stats.total_moves;
+
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
             red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
@@ -282,12 +292,16 @@ impl System {
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    Self::flip_site_chunk(
+                    let (action_delta, new_accepted_moves) = Self::flip_site_chunk(
                         rng, j, chunk, black_sites,
                         dimensions,
                         spacing, step_size,
                         mass_squared, coupling
                     );
+
+                    accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
+                    total_moves.fetch_add(8, Ordering::SeqCst);
+                    action.fetch_add(action_delta, Ordering::SeqCst);
                 }
             );
 
@@ -299,12 +313,16 @@ impl System {
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    Self::flip_site_chunk(
+                    let (action_delta, new_accepted_moves) = Self::flip_site_chunk(
                         rng, j, chunk, red_sites,
                         dimensions,
                         spacing, step_size,
                         mass_squared, coupling
                     );
+
+                    accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
+                    total_moves.fetch_add(8, Ordering::SeqCst);
+                    action.fetch_add(action_delta, Ordering::SeqCst);
                 }
             );
             
@@ -312,6 +330,12 @@ impl System {
 
             let sweep_time = sweep_timer.elapsed();
             sweep_timer = Instant::now();
+
+            if i % 100 == 0 {
+                // Recalculate total action
+                let action = self.compute_full_action();
+                self.data.stats.current_action.store(action, Ordering::SeqCst);
+            }
 
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
@@ -355,7 +379,7 @@ impl System {
                 self.push_metrics();
                 total_timer = Instant::now();
 
-                tracing::info!("Sweep time: {}", sweep_time.as_micros());
+                println!("Current action is: {}", self.data.stats.current_action.load(Ordering::SeqCst));
             }
 
             self.observables.measure(&mut self.data);
@@ -440,10 +464,7 @@ impl System {
                 let mass = HALF * msquared * site_vals2;
                 let inter = TFOURTH * coupling * site_vals4;
 
-                let part = a4 * (kinetic + mass + inter);
-                println!("parts for {i}: {part:?}");
-
-                part
+                a4 * (kinetic + mass + inter)
             })
             .reduce(
                 || f64x8::splat(0.0),
@@ -461,7 +482,7 @@ impl System {
                 const TWO: usizex8 = usizex8::splat(2);
 
                 let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO + usizex8::splat(1);
+                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
 
                 let mut der_sum = f64x8::splat(0.0);
                 for i in 0..4 {

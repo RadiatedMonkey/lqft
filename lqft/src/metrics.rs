@@ -280,7 +280,7 @@ impl MetricState {
         let accept_ratio = ps::register_gauge!("accept_ratio", "Accept Ratio")?;
         let progress = ps::register_gauge!("progress", "Progress")?;
         let step_size = ps::register_gauge!("step_size", "Step Size")?;
-        let action = ps::register_gauge!("action", "Action")?;
+        let action_density = ps::register_gauge!("action_density", "Action density")?;
         let performed_measurements = ps::register_int_counter!("performed_measurements", "Performed Measurements")?;
         let sweep_time = ps::register_gauge!("sweep_time", "Sweep Time")?;
         let stats_time = ps::register_gauge!("stats_time", "Stats Time")?;
@@ -312,7 +312,7 @@ impl MetricState {
             accepted_moves,
             progress,
             step_size,
-            action,
+            action: action_density,
             performed_measurements,
             sweep_time,
             accept_ratio,
@@ -330,6 +330,8 @@ impl MetricState {
 
 impl System {
     pub fn push_metrics(&mut self) {
+        let sweep_size = self.lattice().sweep_size();
+
         self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
         self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
 
@@ -345,7 +347,7 @@ impl System {
         metrics.progress.set(progress);
 
         metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
-        metrics.action.set(self.data.stats.current_action.load(Ordering::Relaxed));
+        metrics.action.set(self.data.stats.current_action.load(Ordering::Relaxed) / sweep_size as f64);
 
         set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
 

@@ -44,7 +44,7 @@ async fn app() -> anyhow::Result<()> {
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
-            mass_squared: 1.0,
+            mass_squared: 0.2,
             coupling: 0.0,
         })
         // .enable_snapshot(SnapshotDesc {
@@ -54,9 +54,9 @@ async fn app() -> anyhow::Result<()> {
         //     flush_method: FlushMethod::Sequential,
         // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
-            dimensions: [2, 2, 2, 2],
-            // initial_state: InitialState::RandomRange(-0.1..0.1),
-            initial_state: InitialState::Fixed(1.0),
+            dimensions: [40, 20, 20, 20],
+            initial_state: InitialState::RandomRange(-0.1..0.1),
+            // initial_state: InitialState::Fixed(1.0),
             spacing: 1.0,
         }))
         .with_performance(PerformanceDesc {
@@ -78,7 +78,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 100_000;
+    let total_sweeps = 10_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
