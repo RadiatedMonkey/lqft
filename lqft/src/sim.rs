@@ -419,15 +419,15 @@ impl System {
                 let mut der_sum = f64x8::splat(0.0);
                 for i in 0..4 {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
-                    let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
                     let fneigh_vals = f64x8::gather_or_default(black_sites, fneigh_idxs / TWO);
-                    let bneigh_vals = f64x8::gather_or_default(black_sites, bneigh_idxs / TWO);
+                    // let bneigh_vals = f64x8::gather_or_default(black_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
-                    let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
 
-                    der_sum += f1_sqrt * f1_sqrt + b1_sqrt * b1_sqrt;
+                    der_sum += f1_sqrt * f1_sqrt;
                 }
 
                 const HALF: f64x8 = f64x8::splat(0.5);
@@ -458,20 +458,20 @@ impl System {
                 const TWO: usizex8 = usizex8::splat(2);
 
                 let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
+                let site_idxs = (usizex8::splat(i) + CTR) * TWO + usizex8::splat(1);
 
                 let mut der_sum = f64x8::splat(0.0);
                 for i in 0..4 {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
-                    let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
                     let fneigh_vals = f64x8::gather_or_default(red_sites, fneigh_idxs / TWO);
-                    let bneigh_vals = f64x8::gather_or_default(red_sites, bneigh_idxs / TWO);
+                    // let bneigh_vals = f64x8::gather_or_default(red_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
-                    let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
 
-                    der_sum += f1_sqrt * f1_sqrt + b1_sqrt * b1_sqrt;
+                    der_sum += f1_sqrt * f1_sqrt
                 }
 
                 const HALF: f64x8 = f64x8::splat(0.5);
