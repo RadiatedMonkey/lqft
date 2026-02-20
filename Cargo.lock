@@ -1208,6 +1208,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atomic_float",
+ "criterion",
  "hdf5-metno",
  "indicatif",
  "ndarray",
@@ -1226,16 +1227,6 @@ dependencies = [
  "tracing",
  "tracing-loki",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "lqft-benches"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "rand",
- "rand_xoshiro",
- "rayon",
 ]
 
 [[package]]

@@ -5,17 +5,19 @@ use crate::stats::SystemStats;
 use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
 use num_traits::Pow;
-use rand_xoshiro::rand_core::SeedableRng;
+use rand_xoshiro::rand_core::{Rng, SeedableRng};
 use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
-use std::ops::Range;
+use std::ops::{Div, Range};
 use std::simd::num::SimdFloat;
-use std::simd::Simd;
+use std::simd::{f64x4, f64x8, u64x8, usizex4, usizex8, Select, Simd, StdFloat};
+use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool};
 use std::time::Instant;
+use rand::RngExt;
 use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
 
@@ -83,7 +85,149 @@ all_public_in!(
     }
 );
 
+#[inline(always)]
+fn to_coord(idx: usizex8, dims: [usize; 4]) -> [usizex8; 4] {
+    let sx = usizex8::splat(dims[1]);
+    let sy = usizex8::splat(dims[2]);
+    let sz = usizex8::splat(dims[3]);
+
+    let z = idx % sz;
+
+    let rem = (idx - z) / sz;
+    let y = rem % sy;
+
+    let rem = (rem - y) / sy;
+    let x = rem % sx;
+
+    let t = (rem - x) / sx;
+
+    [t, x, y, z]
+}
+
+#[inline(always)]
+fn to_index(c: [usizex8; 4], dims: [usize; 4]) -> usizex8 {
+    let sx = usizex8::splat(dims[1]);
+    let sy = usizex8::splat(dims[2]);
+    let sz = usizex8::splat(dims[3]);
+
+    (c[0] * sx * sy * sz) + (c[1] * sy * sz) + (c[2] * sz) + c[3]
+}
+
+#[inline(always)]
+fn find_fneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
+    let coords = to_coord(site_idx, dims);
+    let mut new = coords;
+
+    const ONE: usizex8 = usizex8::splat(1);
+    let dim = usizex8::splat(dims[dir]);
+
+    new[dir] = (coords[dir] + ONE) % dim;
+
+    to_index(new, dims)
+}
+
+#[inline(always)]
+fn find_bneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
+    let coords = to_coord(site_idx, dims);
+    let mut new = coords;
+
+    const ONE: usizex8 = usizex8::splat(1);
+    let dim = usizex8::splat(dims[dir]);
+
+    new[dir] = (coords[dir] + (dim - ONE)) % dim;
+
+    to_index(new, dims)
+}
+
+
 impl System {
+    #[inline(always)]
+    fn flip_site_chunk<R: Rng>(
+        rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
+        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
+    ) {
+        let curr_vals = f64x8::from_slice(chunk);
+
+        // `idx` is only the chunk index, convert the chunk index to 8 site indices.
+        const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
+        const TWO: usizex8 = usizex8::splat(2);
+
+        let site_idx = (usizex8::splat(idx) + CTR) * TWO;
+
+        // Generate flip probabilities
+        let mut offset = f64x8::splat(0.0);
+        let mut realized = f64x8::splat(0.0);
+
+        for i in 0..8 {
+            offset[i] = rng.random_range(-step_size..step_size);
+            realized[i] = rng.random_range(0.0..1.0);
+        }
+
+        let new_vals = curr_vals + offset;
+
+        let prob_threshold = {
+            let mut der_sum = f64x8::splat(0.0);
+            let mut new_der_sum = f64x8::splat(0.0);
+
+            let a = f64x8::splat(spacing);
+            let div_a = f64x8::splat(1.0) / a;
+
+            for i in 0..4 {
+                // FIXME: request actual neighbour indices
+                let fneigh_idxs = find_fneighbors(site_idx, dimensions, i);
+                let bneigh_idxs = find_bneighbors(site_idx, dimensions, i);
+
+                let fneigh_vals = f64x8::gather_or_default(neigh_sites, fneigh_idxs / TWO);
+                let bneigh_vals = f64x8::gather_or_default(neigh_sites, bneigh_idxs / TWO);
+
+                {
+                    let f1_sqrt = (fneigh_vals - curr_vals) * div_a;
+                    let b1_sqrt = (bneigh_vals - curr_vals) * div_a;
+
+                    let f1 = f1_sqrt * f1_sqrt;
+                    let b1 = b1_sqrt * b1_sqrt;
+
+                    der_sum += f1 + b1;
+                }
+
+                {
+                    let f1_sqrt = (fneigh_vals - new_vals) * div_a;
+                    let b1_sqrt = (bneigh_vals - new_vals) * div_a;
+
+                    let f1 = f1_sqrt * f1_sqrt;
+                    let b1 = b1_sqrt * b1_sqrt;
+
+                    new_der_sum += f1 + b1;
+                }
+            }
+
+            const HALF: f64x8 = f64x8::splat(0.5);
+            const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);;
+
+            let msquared = f64x8::splat(mass_squared);
+            let coupling = f64x8::splat(coupling);
+
+            let curr_vals2 = curr_vals * curr_vals;
+            let new_vals2 = new_vals * new_vals;
+
+            let curr_vals4 = curr_vals2 * curr_vals2;
+            let new_vals4 = new_vals2 * new_vals2;
+
+            let kinetic_delta = HALF * (new_der_sum - der_sum);
+            let mass_delta = HALF * msquared * (new_vals2 - curr_vals2);
+            let inter_delta = TFOURTH * coupling * (new_vals4 - curr_vals4);
+
+            let a4 = a * a * a * a;
+
+            let total_delta = a4 * (kinetic_delta + mass_delta + inter_delta);
+            (-total_delta).exp()
+        };
+        let mask = realized.simd_lt(prob_threshold);
+        let result = mask.select(new_vals, curr_vals);
+
+        result.copy_to_slice(chunk);
+    }
+
     /// Simulates the system using the checkerboard method.
     ///
     /// The checkerboard method works by dividing the lattice into a "checkerboard" of "red" and "black" sites.
@@ -93,11 +237,6 @@ impl System {
     /// We first divide the lattice into a colours using [`generate_checkerboard`](Lattice::generate_checkerboard_indices).
     /// Then, using a parallel iterator, we iterate over every single lattice of a given colour and attempt to flip it
     /// using the Metropolis algorithm.
-    ///
-    /// Internal safety:
-    /// To make this work, the lattice makes use of interior mutability. While red is being simulated, all red sites are updated
-    /// by independent threads (i.e. every red site is only accessed by a single thread at once). The black sites are not updated
-    /// and are accessed by multiple threads at a time. The same holds for simulating black sites.
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
         self.data.stats.desired_sweeps = total_sweeps;
 
@@ -108,39 +247,59 @@ impl System {
         self.data.stats.reserve_capacity(total_sweeps);
         self.data.correlation_slices
             .resize(self.data.lattice.dimensions()[0], 0.0);
-        let (red, black) = self.data.lattice.generate_checkerboard_indices();
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
         let mut sweep_timer;
         let mut total_timer = Instant::now();
 
+        let mass_squared = self.data.mass_squared;
+        let coupling = self.data.coupling;
+        let spacing = self.data.lattice.spacing();
+        let dimensions = self.data.lattice.dimensions();
+
         for i in 0..total_sweeps {
+            const LANES: usize = 8;
+
             sweep_timer = Instant::now();
             self.data.stats.current_sweep = i;
 
             // First update red sites....
             self.simulating.store(true, Ordering::SeqCst);
-            
-            let mut red_sites = unsafe { &mut *self.data.lattice.red_sites.get() };
-            red_sites.par_iter_mut().for_each_init(
+
+            let step_size = self.current_step_size();
+
+            let red_sites = &mut self.data.lattice.red_sites;
+            let black_sites = &self.data.lattice.black_sites;
+            red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
-                |rng, site| {
-                    
+                |rng, (j, chunk)| {
+                    Self::flip_site_chunk(
+                        rng, j, chunk, black_sites,
+                        dimensions,
+                        spacing, step_size,
+                        mass_squared, coupling
+                    );
                 }
             );
-            
-            let mut black_sites = unsafe { &mut *self.data.lattice.black_sites.get() };
-            black_sites.par_iter_mut().for_each_init(
+
+            let red_sites = &self.data.lattice.red_sites;
+            let black_sites = &mut self.data.lattice.black_sites;
+            black_sites.par_chunks_mut(LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
-                |rng, site| {
-                    
+                |rng, (j, chunk)| {
+                    Self::flip_site_chunk(
+                        rng, j, chunk, red_sites,
+                        dimensions,
+                        spacing, step_size,
+                        mass_squared, coupling
+                    );
                 }
             );
             
@@ -153,6 +312,10 @@ impl System {
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
             if i > 2 * self.data.burn_in_desc.block_size {
                 self.data.stats.thermalisation_ratio_history.push(th_ratio);
+            }
+
+            if self.data.stats.thermalised_at.is_none() {
+                self.correct_step_size();
             }
 
             if self.data.stats.thermalised_at.is_none() && thermalised {
@@ -225,34 +388,35 @@ impl System {
 
     /// Computes the absolute action of the entire lattice.
     pub fn compute_full_action(&self) -> f64 {
-        let mut action = 0.0;
-        for i in 0..self.data.lattice.sweep_size() {
-            let a = self.data.lattice.spacing();
-
-            let val = unsafe { *self.data.lattice[i].get() };
-            let mut der_sum = 0.0;
-
-            for j in 0..4 {
-                // TODO: Create prebuilt adjacency table
-                // let orig = self.lattice.from_index(i);
-                let fneigh = self.data.lattice.get_forward_neighbor(i, j);
-                let bneigh = self.data.lattice.get_backward_neighbor(i, j);
-
-                // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
-                let fneigh_val = unsafe { *self.data.lattice[fneigh].get() };
-                let bneigh_val = unsafe { *self.data.lattice[bneigh].get() };
-
-                der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
-            }
-
-            let kinetic_delta = 0.5 * der_sum;
-            let mass_delta = 0.5 * self.data.mass_squared * val.pow(2);
-            let interaction_delta = 1.0 / 24.0 * self.data.coupling * val.pow(4);
-
-            action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
-        }
-
-        action
+        0.0
+        // let mut action = 0.0;
+        // for i in 0..self.data.lattice.sweep_size() {
+        //     let a = self.data.lattice.spacing();
+        //
+        //     let val = unsafe { *self.data.lattice[i].get() };
+        //     let mut der_sum = 0.0;
+        //
+        //     for j in 0..4 {
+        //         // TODO: Create prebuilt adjacency table
+        //         // let orig = self.lattice.from_index(i);
+        //         let fneigh = self.data.lattice.get_forward_neighbor(i, j);
+        //         let bneigh = self.data.lattice.get_backward_neighbor(i, j);
+        //
+        //         // SAFETY: Neighbor sites will always only be read from due to checkerboarding.
+        //         let fneigh_val = unsafe { *self.data.lattice[fneigh].get() };
+        //         let bneigh_val = unsafe { *self.data.lattice[bneigh].get() };
+        //
+        //         der_sum += ((fneigh_val - val) / a).pow(2) + ((val - bneigh_val) / a).pow(2);
+        //     }
+        //
+        //     let kinetic_delta = 0.5 * der_sum;
+        //     let mass_delta = 0.5 * self.data.mass_squared * val.pow(2);
+        //     let interaction_delta = 1.0 / 24.0 * self.data.coupling * val.pow(4);
+        //
+        //     action += a.pow(4) * (kinetic_delta + mass_delta + interaction_delta);
+        // }
+        //
+        // action
     }
 
     fn get_timeslice(&mut self) -> Vec<f64> {
@@ -260,11 +424,11 @@ impl System {
         let st = self.data.lattice.dim_t();
 
         let mut sum_t = vec![0.0; st];
-        for i in 0..self.data.lattice.sweep_size() {
-            let t = self.data.lattice.from_index(i)[0];
-            let val = unsafe { *self.data.lattice[i].get() };
-            sum_t[t] += val;
-        }
+        // for i in 0..self.data.lattice.sweep_size() {
+        //     let t = self.data.lattice.from_index(i)[0];
+        //     let val = unsafe { *self.data.lattice[i].get() };
+        //     sum_t[t] += val;
+        // }
 
         sum_t
     }

@@ -424,6 +424,12 @@ impl SystemBuilder {
     pub fn build(self) -> anyhow::Result<System> {
         tracing::info!("Finished configuration, building simulation...");
 
+        if let LatticeDesc::Create(desc) = &self.lattice_desc {
+            if desc.dimensions.iter().sum::<usize>() % 2 != 0 {
+                anyhow::bail!("Lattice size must be an even number");
+            }
+        }
+
         let lattice = match self.lattice_desc {
             LatticeDesc::Create(desc) => Lattice::new(desc, self.performance_desc.lattice_iter),
             LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot, self.performance_desc.lattice_iter)?,

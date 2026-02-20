@@ -14,14 +14,15 @@ use rayon::prelude::*;
 /// 2 adjacent indices in each dimension.
 type AdjacentIndices = [usize; 8];
 
+#[derive(Clone)]
 pub struct Lattice {
     iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
     adjacency: Vec<AdjacentIndices>,
 
-    pub(crate) red_sites: UnsafeCell<Vec<f64>>,
-    pub(crate) black_sites: UnsafeCell<Vec<f64>>
+    pub(crate) red_sites: Vec<f64>,
+    pub(crate) black_sites: Vec<f64>
 }
 
 unsafe impl Send for Lattice {}
@@ -137,36 +138,16 @@ impl Lattice {
         // }
         todo!();
 
-        let mut lattice = Lattice {
-            iter_method,
-            red_sites: UnsafeCell::new(red_sites), black_sites: UnsafeCell::new(black_sites),
-            adjacency: Vec::new(),
-            dimensions: dimensions.into(),
-            spacing,
-        };
-
-        lattice.generate_adjacency();
-        lattice
-    }
-
-    pub unsafe fn clone(&self) -> Self {
-        let red_clone = unsafe {
-            let sites = &*self.red_sites.get();
-            sites.clone()
-        };
-
-        let black_clone = unsafe {
-            let sites = &*self.black_sites.get();
-            sites.clone()
-        };
-
-        Self {
-            iter_method: self.iter_method,
-            red_sites: UnsafeCell::new(red_clone), black_sites: UnsafeCell::new(black_clone),
-            dimensions: self.dimensions,
-            spacing: self.spacing,
-            adjacency: self.adjacency.clone(),
-        }
+        // let mut lattice = Lattice {
+        //     iter_method,
+        //     red_sites: UnsafeCell::new(red_sites), black_sites: UnsafeCell::new(black_sites),
+        //     adjacency: Vec::new(),
+        //     dimensions: dimensions.into(),
+        //     spacing,
+        // };
+        //
+        // lattice.generate_adjacency();
+        // lattice
     }
 
     /// Computes the amount of iterations that a single sweep consists of.
@@ -258,14 +239,6 @@ impl Lattice {
         self.dimensions[3]
     }
 
-    unsafe fn red_sites(&self) -> &[f64] {
-        unsafe { &*self.red_sites.get() }
-    }
-
-    unsafe fn black_sites(&self) -> &[f64] {
-        unsafe { &*self.black_sites.get() }
-    }
-
     pub fn mean(&self) -> f64 {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.mean_seq(),
@@ -276,11 +249,8 @@ impl Lattice {
     /// Sequentially computes the mean of the lattice
     #[inline]
     pub fn mean_seq(&self) -> f64 {
-        // let sum: f64 = self.sites.iter().map(|c| unsafe { *c.get() }).sum();
-        // sum / self.sites.len() as f64
-
-        let red_sum = unsafe { self.red_sites() }.iter().sum::<f64>();
-        let black_sum = unsafe { self.black_sites() }.iter().sum::<f64>();
+        let red_sum = self.red_sites.iter().sum::<f64>();
+        let black_sum = self.black_sites.iter().sum::<f64>();
 
         (red_sum + black_sum) / self.sweep_size() as f64
     }
@@ -288,8 +258,8 @@ impl Lattice {
     /// Computes the mean of the lattice in parallel.
     #[inline]
     pub fn mean_par(&self) -> f64 {
-        let red_sum = unsafe { self.red_sites() }.par_iter().sum::<f64>();
-        let black_sum = unsafe { self.black_sites() }.par_iter().sum::<f64>();
+        let red_sum = self.red_sites.par_iter().sum::<f64>();
+        let black_sum = self.black_sites.par_iter().sum::<f64>();
 
         (red_sum + black_sum) / self.sweep_size() as f64
     }
@@ -304,11 +274,8 @@ impl Lattice {
     /// Sequentially computes the mean squared of the lattice
     #[inline]
     pub fn meansq_seq(&self) -> f64 {
-        // let sum: f64 = self.sites.iter().map(|x| unsafe { *x.get() }.pow(2)).sum();
-        // sum / self.sites.len() as f64
-
-        let red_sum = unsafe { self.red_sites() }.iter().map(|x| x * x).sum::<f64>();
-        let black_sum = unsafe { self.black_sites() }.iter().map(|x| x * x).sum::<f64>();
+        let red_sum = self.red_sites.iter().map(|x| x * x).sum::<f64>();
+        let black_sum = self.black_sites.iter().map(|x| x * x).sum::<f64>();
 
         (red_sum + black_sum) / self.sweep_size() as f64
     }
@@ -316,8 +283,8 @@ impl Lattice {
     #[inline]
     /// Computes the mean squared of the lattice in parallel
     pub fn meansq_par(&self) -> f64 {
-        let red_sum = unsafe { self.red_sites() }.par_iter().map(|x| x * x).sum::<f64>();
-        let black_sum = unsafe { self.black_sites() }.par_iter().map(|x| x * x).sum::<f64>();
+        let red_sum = self.red_sites.par_iter().map(|x| x * x).sum::<f64>();
+        let black_sum = self.black_sites.par_iter().map(|x| x * x).sum::<f64>();
 
         (red_sum + black_sum) / self.sweep_size() as f64
     }
@@ -346,8 +313,8 @@ impl Lattice {
     /// Fills the data with a fixed value.
     pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
         let count = dimensions.iter().product::<usize>().div_ceil(2);
-        let red_sites = UnsafeCell::new(vec![fill_value; count]);
-        let black_sites = UnsafeCell::new(vec![fill_value; count]);
+        let red_sites = vec![fill_value; count];
+        let black_sites = vec![fill_value; count];
 
         let mut lattice = Self {
             iter_method,
@@ -386,8 +353,7 @@ impl Lattice {
 
         let mut lattice = Self {
             iter_method,
-            red_sites: UnsafeCell::new(red_sites),
-            black_sites: UnsafeCell::new(black_sites),
+            red_sites, black_sites,
             spacing,
             dimensions,
             adjacency: Vec::new(),

@@ -47,12 +47,12 @@ async fn app() -> anyhow::Result<()> {
             mass_squared: 1.0,
             coupling: 0.0,
         })
-        .enable_snapshot(SnapshotDesc {
-            file: "snapshots/snapshots.h5".to_string(),
-            ty: SnapshotType::Checkpoint,
-            chunk_size: [8; 4],
-            flush_method: FlushMethod::Sequential,
-        })
+        // .enable_snapshot(SnapshotDesc {
+        //     file: "snapshots/snapshots.h5".to_string(),
+        //     ty: SnapshotType::Checkpoint,
+        //     chunk_size: [8; 4],
+        //     flush_method: FlushMethod::Sequential,
+        // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
             dimensions: [40, 20, 20, 20],
             initial_state: InitialState::RandomRange(-0.1..0.1),

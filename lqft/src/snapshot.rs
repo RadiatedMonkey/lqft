@@ -45,93 +45,95 @@ impl SnapshotState {
     }
 
     fn sequential_job(desc: JobDesc) {
-        tracing::info!("Initialised sequential snapshot flush thread");
-
-        let JobDesc {
-            dataset,
-            rx,
-            st,
-            sx,
-            sy,
-            sz,
-        } = desc;
-
-        let mut fragment_counter = 0;
-
-        while let Ok(fragment) = rx.recv() {
-            tracing::trace!("Snapshot fragment {fragment_counter} received");
-
-            let sites = &fragment.lattice.sites;
-            let raw_slice: &[f64] =
-                unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
-
-            let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice);
-
-            if let Err(err) = &view {
-                tracing::error!("Failed to create ArrayView5: {err}")
-            }
-            let view = view.unwrap();
-
-            let result = dataset.write_slice(
-                view,
-                ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..],
-            );
-            if let Err(err) = result {
-                tracing::error!("Failed to write snapshots fragment to disk: {err}")
-            }
-
-            tracing::trace!("Flushed snapshots fragment {fragment_counter}");
-
-            fragment_counter += 1;
-        }
+        // tracing::info!("Initialised sequential snapshot flush thread");
+        //
+        // let JobDesc {
+        //     dataset,
+        //     rx,
+        //     st,
+        //     sx,
+        //     sy,
+        //     sz,
+        // } = desc;
+        //
+        // let mut fragment_counter = 0;
+        //
+        // while let Ok(fragment) = rx.recv() {
+        //     tracing::trace!("Snapshot fragment {fragment_counter} received");
+        //
+        //     let sites = &fragment.lattice.sites;
+        //     let raw_slice: &[f64] =
+        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
+        //
+        //     let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice);
+        //
+        //     if let Err(err) = &view {
+        //         tracing::error!("Failed to create ArrayView5: {err}")
+        //     }
+        //     let view = view.unwrap();
+        //
+        //     let result = dataset.write_slice(
+        //         view,
+        //         ndarray::s![fragment_counter..fragment_counter + 1, .., .., .., ..],
+        //     );
+        //     if let Err(err) = result {
+        //         tracing::error!("Failed to write snapshots fragment to disk: {err}")
+        //     }
+        //
+        //     tracing::trace!("Flushed snapshots fragment {fragment_counter}");
+        //
+        //     fragment_counter += 1;
+        // }
+        todo!();
     }
 
     fn batch_job(desc: JobDesc, batch_size: usize) {
-        tracing::info!("Initialised snapshot batch flush thread");
-
-        let JobDesc {
-            dataset,
-            rx,
-            st,
-            sx,
-            sy,
-            sz,
-        } = desc;
-
-        let mut buffer = Array5::<f64>::zeros((batch_size, st, sx, sy, sz));
-
-        let mut fragment_counter = 0;
-        let mut batch_counter = 0;
-        while let Ok(fragment) = rx.recv() {
-            let sites = &fragment.lattice.sites;
-            let raw_slice: &[f64] =
-                unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
-
-            let mut subview = buffer.slice_mut(ndarray::s![batch_counter, .., .., .., ..]);
-            let incoming_view = ArrayView4::from_shape((st, sx, sy, sz), raw_slice).unwrap();
-            subview.assign(&incoming_view);
-
-            batch_counter += 1;
-
-            if batch_counter >= batch_size {
-                let selection = ndarray::s![
-                    fragment_counter..fragment_counter + batch_counter,
-                    ..,
-                    ..,
-                    ..,
-                    ..
-                ];
-
-                if let Err(err) = dataset.write_slice(&buffer, selection) {
-                    tracing::error!("Failed to write snapshots batch: {err}");
-                }
-
-                tracing::trace!("Wrote {batch_counter} snapshots batch to disk");
-
-                fragment_counter += batch_size;
-                batch_counter = 0;
-            }
-        }
+        // tracing::info!("Initialised snapshot batch flush thread");
+        //
+        // let JobDesc {
+        //     dataset,
+        //     rx,
+        //     st,
+        //     sx,
+        //     sy,
+        //     sz,
+        // } = desc;
+        //
+        // let mut buffer = Array5::<f64>::zeros((batch_size, st, sx, sy, sz));
+        //
+        // let mut fragment_counter = 0;
+        // let mut batch_counter = 0;
+        // while let Ok(fragment) = rx.recv() {
+        //     let sites = &fragment.lattice.sites;
+        //     let raw_slice: &[f64] =
+        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
+        //
+        //     let mut subview = buffer.slice_mut(ndarray::s![batch_counter, .., .., .., ..]);
+        //     let incoming_view = ArrayView4::from_shape((st, sx, sy, sz), raw_slice).unwrap();
+        //     subview.assign(&incoming_view);
+        //
+        //     batch_counter += 1;
+        //
+        //     if batch_counter >= batch_size {
+        //         let selection = ndarray::s![
+        //             fragment_counter..fragment_counter + batch_counter,
+        //             ..,
+        //             ..,
+        //             ..,
+        //             ..
+        //         ];
+        //
+        //         if let Err(err) = dataset.write_slice(&buffer, selection) {
+        //             tracing::error!("Failed to write snapshots batch: {err}");
+        //         }
+        //
+        //         tracing::trace!("Wrote {batch_counter} snapshots batch to disk");
+        //
+        //         fragment_counter += batch_size;
+        //         batch_counter = 0;
+        //     }
+        // }
+        todo!();
     }
 
     /// Initialises the snapshots.
