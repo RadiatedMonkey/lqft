@@ -237,6 +237,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use prometheus::Encoder;
 use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
+use crate::all_public_in;
 use crate::observable_impl::{MeanValue, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
@@ -244,33 +245,37 @@ pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     ctr.inc_by(inc);
 }
 
-pub struct MetricState {
-    total_moves: ps::IntCounter,
-    accepted_moves: ps::IntCounter,
-    accept_ratio: ps::Gauge,
-    progress: ps::Gauge,
+all_public_in! {
+    super,
+    pub struct MetricState {
+        total_moves: ps::IntCounter,
+        accepted_moves: ps::IntCounter,
+        accept_ratio: ps::Gauge,
+        progress: ps::Gauge,
 
-    step_size: ps::Gauge,
-    action: ps::Gauge,
-    performed_measurements: ps::IntCounter,
+        step_size: ps::Gauge,
+        action_density: ps::Gauge,
+        performed_measurements: ps::IntCounter,
 
-    sweep_time: ps::Gauge,
-    stats_time: ps::Gauge,
-    therm_ratio: ps::Gauge,
-    completed_sweeps: ps::IntCounter,
-    thermalised_at: ps::IntCounter,
+        sweep_time: ps::Gauge,
+        stats_time: ps::Gauge,
+        therm_ratio: ps::Gauge,
+        completed_sweeps: ps::IntCounter,
+        thermalised_at: ps::IntCounter,
 
-    mean: ps::Gauge,
-    meansq: ps::Gauge,
-    var: ps::Gauge,
+        mean: ps::Gauge,
+        meansq: ps::Gauge,
+        var: ps::Gauge,
 
-    cpu: ps::Gauge,
-    mem: ps::Gauge,
+        cpu: ps::Gauge,
+        mem: ps::Gauge,
 
-    sys: sysinfo::System,
-    pid: sysinfo::Pid,
-    pid_ctr: ps::IntCounter,
-    runtime: ps::Gauge
+        sys: sysinfo::System,
+        pid: sysinfo::Pid,
+        pid_ctr: ps::IntCounter,
+        runtime: ps::Gauge,
+        sweep_size: ps::IntCounter
+    }
 }
 
 impl MetricState {
@@ -299,6 +304,8 @@ impl MetricState {
         let pid = sysinfo::get_current_pid().unwrap();
         pid_ctr.inc_by(pid.as_u32() as u64);
 
+        let sweep_size = ps::register_int_counter!("sweep_size", "Sweep size")?;
+
         let runtime = ps::register_gauge!("run_time", "Run time")?;
 
         let running = Arc::new(AtomicBool::new(true));
@@ -312,7 +319,7 @@ impl MetricState {
             accepted_moves,
             progress,
             step_size,
-            action: action_density,
+            action_density,
             performed_measurements,
             sweep_time,
             accept_ratio,
@@ -323,6 +330,7 @@ impl MetricState {
             thermalised_at,
             cpu, mem, sys: sysinfo::System::new_all(),
             pid_ctr, pid,
+            sweep_size,
             runtime
         })
     }
@@ -347,7 +355,7 @@ impl System {
         metrics.progress.set(progress);
 
         metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
-        metrics.action.set(self.data.stats.current_action.load(Ordering::Relaxed) / sweep_size as f64);
+        metrics.action_density.set(self.data.stats.current_action / sweep_size as f64);
 
         set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
 

@@ -28,7 +28,7 @@ pub struct SystemStats {
     /// History of the action over time.
     pub action_history: Vec<f64>,
     /// The action at the current point in time.
-    pub current_action: AtomicF64,
+    pub current_action: f64,
     /// The history of the thermalisation ratio.
     pub thermalisation_ratio_history: Vec<f64>,
     /// The sweep at which the system first passed the thermalisation threshold.
@@ -67,7 +67,7 @@ impl System {
     ) -> anyhow::Result<()> {
         let mean = self.data.lattice.mean_seq();
         let meansq = self.data.lattice.meansq();
-        let action = self.data.stats.current_action.load(Ordering::Acquire);
+        let action = self.data.stats.current_action;
 
         self.data.stats.mean_history.push(mean);
         self.data.stats.meansq_history.push(meansq);
@@ -155,7 +155,7 @@ impl SystemStats {
 
     /// The most recent value of the whole system action.
     pub fn current_action(&self) -> f64 {
-        self.current_action.load(Ordering::Relaxed)
+        self.current_action
     }
 
     /// The total amount of attempted moves so far.
@@ -174,7 +174,7 @@ impl Default for SystemStats {
         Self {
             current_sweep: 0,
             desired_sweeps: 0,
-            current_action: AtomicF64::new(0.0),
+            current_action: 0.0,
             total_moves: AtomicU64::new(0),
             accepted_move_history: Vec::new(),
             accepted_moves: AtomicU64::new(0),

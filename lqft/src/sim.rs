@@ -20,24 +20,7 @@ use std::time::Instant;
 use rand::RngExt;
 use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
-
-/// Makes all struct fields public in the current and specified modules.
-/// This makes it easier to spread implementation details over multiple archive.
-macro_rules! all_public_in {
-    ($module:path, $vis:vis struct $name:ident {
-        $(
-            $(#[$meta:meta])*
-            $field_name:ident: $field_type:ty
-        ),* $(,)?
-    }) => {
-        $vis struct $name {
-            $(
-                $(#[$meta])*
-                pub(in $module) $field_name : $field_type
-            ),*
-        }
-    }
-}
+use crate::all_public_in;
 
 /// Simulation settings that should be saved to the archive.
 #[derive(H5Type, Serialize, Deserialize)]
@@ -72,6 +55,7 @@ pub struct SystemData {
     pub measurement_interval: usize,
     pub current_step_size: AtomicF64,
     pub stats: SystemStats,
+    pub successful_therm_checks: usize
 }
 
 all_public_in!(
@@ -146,7 +130,7 @@ impl System {
     fn flip_site_chunk<R: Rng>(
         rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
         spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
-    ) -> (f64, u64) {
+    ) -> u64 {
         let curr_vals = f64x8::from_slice(chunk);
 
         // `idx` is only the chunk index, convert the chunk index to 8 site indices.
@@ -226,12 +210,10 @@ impl System {
         let prob_threshold = (-action_deltas).exp();
         let mask = realized.simd_lt(prob_threshold);
         let result = mask.select(new_vals, curr_vals);
-        let total_delta = mask.select(action_deltas, f64x8::splat(0.0)).reduce_sum();
 
         result.copy_to_slice(chunk);
 
-        let accepted_moves: u64 = mask.to_array().iter().map(|&b| b as u64).sum();
-        (total_delta, accepted_moves)
+        mask.to_array().iter().map(|&b| b as u64).sum()
     }
 
     /// Simulates the system using the checkerboard method.
@@ -247,7 +229,7 @@ impl System {
         self.data.stats.desired_sweeps = total_sweeps;
 
         let action = self.compute_full_action();
-        self.data.stats.current_action.store(action, Ordering::SeqCst);
+        self.data.stats.current_action = action;
 
         tracing::debug!("Starting action is: {action}");
 
@@ -280,19 +262,20 @@ impl System {
 
             let step_size = self.current_step_size();
 
-            let action = &self.data.stats.current_action;
+            let action = &mut self.data.stats.current_action;
             let accepted_moves = &self.data.stats.accepted_moves;
             let total_moves = &self.data.stats.total_moves;
 
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
+
             red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    let (action_delta, new_accepted_moves) = Self::flip_site_chunk(
+                    let new_accepted_moves = Self::flip_site_chunk(
                         rng, j, chunk, black_sites,
                         dimensions,
                         spacing, step_size,
@@ -301,7 +284,6 @@ impl System {
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
                     total_moves.fetch_add(8, Ordering::SeqCst);
-                    action.fetch_add(action_delta, Ordering::SeqCst);
                 }
             );
 
@@ -313,7 +295,7 @@ impl System {
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    let (action_delta, new_accepted_moves) = Self::flip_site_chunk(
+                    let new_accepted_moves = Self::flip_site_chunk(
                         rng, j, chunk, red_sites,
                         dimensions,
                         spacing, step_size,
@@ -322,10 +304,9 @@ impl System {
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
                     total_moves.fetch_add(8, Ordering::SeqCst);
-                    action.fetch_add(action_delta, Ordering::SeqCst);
                 }
             );
-            
+
             self.simulating.store(false, Ordering::SeqCst);
 
             let sweep_time = sweep_timer.elapsed();
@@ -334,42 +315,32 @@ impl System {
             if i % 100 == 0 {
                 // Recalculate total action
                 let action = self.compute_full_action();
-                self.data.stats.current_action.store(action, Ordering::SeqCst);
+                self.data.stats.current_action = action;
             }
 
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
             if i > 2 * self.data.burn_in_desc.block_size {
                 self.data.stats.thermalisation_ratio_history.push(th_ratio);
+
+                // Perform one check
+                if i % self.data.burn_in_desc.block_size == 0 && self.data.stats.thermalised_at.is_none() {
+                    if thermalised {
+                        self.data.successful_therm_checks += 1;
+                    } else {
+                        self.data.successful_therm_checks = 0;
+                    }
+
+                    if self.data.successful_therm_checks == self.data.burn_in_desc.consecutive_passes {
+                        // System has thermalised
+                        self.data.stats.thermalised_at = Some(i);
+                        tracing::info!("System has thermalised at sweep {i} after {} consecutive checks", self.data.burn_in_desc.consecutive_passes);
+                    }
+                }
             }
 
             if self.data.stats.thermalised_at.is_none() {
                 self.correct_step_size();
-            }
-
-            if self.data.stats.thermalised_at.is_none() && thermalised {
-                tracing::info!("System has thermalised at sweep {i}");
-                // System has thermalised, measurements can begin.
-                self.data.stats.thermalised_at = Some(i);
-            }
-
-            // If system is thermalised and some amount of autocorrelation times have passed,
-            // perform another measurement.
-            if self.data.stats.thermalised_at.is_some() && i % self.data.measurement_interval == 0 {
-                let sum_t = self.get_timeslice();
-                let st = self.data.lattice.dimensions()[0];
-
-                for t in 0..st {
-                    let mut config_corr = 0.0;
-                    for tp in 0..st {
-                        let t_dist = (tp + t) % st;
-                        config_corr += sum_t[tp] * sum_t[t_dist];
-                    }
-
-                    self.data.correlation_slices[t] += config_corr / (st as f64);
-                }
-
-                self.data.stats.performed_measurements += 1;
             }
 
             // Record statistics on every sweep.
@@ -378,8 +349,6 @@ impl System {
             if total_timer.elapsed().as_secs() >= 1 {
                 self.push_metrics();
                 total_timer = Instant::now();
-
-                println!("Current action is: {}", self.data.stats.current_action.load(Ordering::SeqCst));
             }
 
             self.observables.measure(&mut self.data);

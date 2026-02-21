@@ -243,6 +243,14 @@ pub struct BurnInDesc {
     ///
     /// Default value: `0.1`.
     pub required_ratio: f64,
+    /// How many thermalisation checks should be successful for the system to be considered
+    /// thermalised.
+    ///
+    /// For example if this value is set to 5 and the block size is set to 100, the system will check
+    /// the every 100 sweeps 5 times in a row.
+    ///
+    /// Default value: `5`.
+    pub consecutive_passes: usize
 }
 
 impl Default for BurnInDesc {
@@ -250,6 +258,7 @@ impl Default for BurnInDesc {
         Self {
             block_size: 100,
             required_ratio: 0.1,
+            consecutive_passes: 5
         }
     }
 }
@@ -484,6 +493,7 @@ impl SystemBuilder {
             correlation_slices: Vec::new(),
             measurement_interval: 50,
             stats: SystemStats::default(),
+            successful_therm_checks: 0
         };
 
         let mut sim = System {
@@ -495,11 +505,10 @@ impl SystemBuilder {
         };
 
         let first_action = sim.compute_full_action();
-        sim.data.stats
-            .current_action
-            .store(first_action, Ordering::Release);
-
+        sim.data.stats.current_action = first_action;
         sim.data.stats.action_history.push(first_action);
+
+        sim.metrics.sweep_size.inc_by(sim.data.lattice.sweep_size() as u64);
 
         tracing::info!("System initialised");
 

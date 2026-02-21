@@ -17,6 +17,25 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use crate::observable_impl::{MeanValue, Variance};
 
+/// Makes all struct fields public in the current and specified modules.
+/// This makes it easier to spread implementation details over multiple archive.
+#[macro_export]
+macro_rules! all_public_in {
+    ($module:path, $vis:vis struct $name:ident {
+        $(
+            $(#[$meta:meta])*
+            $field_name:ident: $field_type:ty
+        ),* $(,)?
+    }) => {
+        $vis struct $name {
+            $(
+                $(#[$meta])*
+                pub(in $module) $field_name : $field_type
+            ),*
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     if let Err(err) = app().await {
@@ -44,8 +63,8 @@ async fn app() -> anyhow::Result<()> {
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
-            mass_squared: 0.2,
-            coupling: 0.0,
+            mass_squared: 1.0,
+            coupling: 1.0,
         })
         // .enable_snapshot(SnapshotDesc {
         //     file: "snapshots/snapshots.h5".to_string(),
@@ -56,14 +75,13 @@ async fn app() -> anyhow::Result<()> {
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
             dimensions: [40, 20, 20, 20],
             initial_state: InitialState::RandomRange(-0.1..0.1),
-            // initial_state: InitialState::Fixed(1.0),
             spacing: 1.0,
         }))
         .with_performance(PerformanceDesc {
             lattice_iter: LatticeIterMethod::Parallel
         })
         .with_observable::<MeanValue>()
-        // .with_observable::<Variance>()
+        .with_observable::<Variance>()
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
@@ -71,14 +89,15 @@ async fn app() -> anyhow::Result<()> {
             correction_size: 0.05,
         })
         .with_burn_in(BurnInDesc {
-            block_size: 500,
-            required_ratio: 0.05,
+            block_size: 100,
+            required_ratio: 0.03,
+            consecutive_passes: 5
         })
         .build()?;
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 10_000;
+    let total_sweeps = 5_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
