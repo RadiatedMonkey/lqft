@@ -54,6 +54,51 @@ impl ObservableState for MeanValueState {
     }
 }
 
+pub struct MeanSqValueState {
+    data: Vec<f64>
+}
+
+impl ObservableState for MeanSqValueState {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn frequency(&self) -> MeasureFrequency {
+        MeasureFrequency::Sweep(1)
+    }
+
+    fn burn_in(&self) -> bool { false }
+
+    fn measure(&mut self, data: &SystemData) {
+        let meansq = data.lattice.meansq();
+        self.data.push(meansq);
+    }
+
+    fn measured(&self) -> Option<f64> {
+        self.data.last().copied()
+    }
+
+    fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    fn prepare(&mut self, n: usize) {
+        self.data.reserve(n);
+    }
+}
+
+pub struct MeanSqValue;
+
+impl Observable for MeanSqValue {
+    type State = MeanSqValueState;
+
+    const NAME: &'static str = "mean_sq_value";
+
+    fn new_state() -> Self::State {
+        MeanSqValueState { data: Vec::new() }
+    }
+}
+
 /// Measures the variance of the lattice.
 pub struct Variance;
 

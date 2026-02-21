@@ -22,6 +22,12 @@ use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
 use crate::all_public_in;
 
+type SimdUType = usizex4;
+type SimdFType = f64x4;
+pub const LANES: usize = 4;
+const CTR: SimdUType = SimdUType::from_array([0, 1, 2, 3]);
+const TWO: SimdUType = SimdUType::splat(2);
+
 /// Simulation settings that should be saved to the archive.
 #[derive(H5Type, Serialize, Deserialize)]
 #[repr(C)]
@@ -70,10 +76,10 @@ all_public_in!(
 );
 
 #[inline(always)]
-fn to_coord(idx: usizex8, dims: [usize; 4]) -> [usizex8; 4] {
-    let sx = usizex8::splat(dims[1]);
-    let sy = usizex8::splat(dims[2]);
-    let sz = usizex8::splat(dims[3]);
+fn to_coord(idx: SimdUType, dims: [usize; 4]) -> [SimdUType; 4] {
+    let sx = SimdUType::splat(dims[1]);
+    let sy = SimdUType::splat(dims[2]);
+    let sz = SimdUType::splat(dims[3]);
 
     let z = idx % sz;
 
@@ -89,61 +95,81 @@ fn to_coord(idx: usizex8, dims: [usize; 4]) -> [usizex8; 4] {
 }
 
 #[inline(always)]
-fn to_index(c: [usizex8; 4], dims: [usize; 4]) -> usizex8 {
-    let sx = usizex8::splat(dims[1]);
-    let sy = usizex8::splat(dims[2]);
-    let sz = usizex8::splat(dims[3]);
+fn to_index(c: [SimdUType; 4], dims: [usize; 4]) -> SimdUType {
+    let sx = SimdUType::splat(dims[1]);
+    let sy = SimdUType::splat(dims[2]);
+    let sz = SimdUType::splat(dims[3]);
 
     (c[0] * sx * sy * sz) + (c[1] * sy * sz) + (c[2] * sz) + c[3]
 }
 
+// #[inline(always)]
+// fn find_fneighbors(site_idx: SimdUType, dims: [usize; 4], dir: usize) -> SimdUType {
+//     let coords = to_coord(site_idx, dims);
+//     let mut new = coords;
+//
+//     const ONE: SimdUType = SimdUType::splat(1);
+//     let dim = SimdUType::splat(dims[dir]);
+//
+//     new[dir] = (coords[dir] + ONE) % dim;
+//
+//     to_index(new, dims)
+// }
+
 #[inline(always)]
-fn find_fneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
-    let coords = to_coord(site_idx, dims);
-    let mut new = coords;
-
-    const ONE: usizex8 = usizex8::splat(1);
-    let dim = usizex8::splat(dims[dir]);
-
-    new[dir] = (coords[dir] + ONE) % dim;
-
-    to_index(new, dims)
+fn find_fneighbors_red(site_idx: SimdUType, adjacency: &[Vec<usize>; 8], dir: usize) -> SimdUType {
+    SimdUType::gather_or_default(&adjacency[dir], site_idx)
 }
 
 #[inline(always)]
-fn find_bneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
+fn find_bneighbors_red(site_idx: SimdUType, adjacency: &[Vec<usize>; 8], dir: usize) -> SimdUType {
+    SimdUType::gather_or_default(&adjacency[4 + dir], site_idx)
+}
+
+#[inline(always)]
+fn find_bneighbors(site_idx: SimdUType, dims: [usize; 4], dir: usize) -> SimdUType {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
-    const ONE: usizex8 = usizex8::splat(1);
-    let dim = usizex8::splat(dims[dir]);
+    const ONE: SimdUType = SimdUType::splat(1);
+    let dim = SimdUType::splat(dims[dir]);
 
     new[dir] = (coords[dir] + (dim - ONE)) % dim;
 
     to_index(new, dims)
 }
 
+pub enum Red {}
+pub enum Black {}
+
+pub trait Color {
+    fn is_red() -> bool;
+}
+
+impl Color for Red {
+    fn is_red() -> bool { true }
+}
+impl Color for Black {
+    fn is_red() -> bool { false }
+}
 
 impl System {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
-    fn flip_site_chunk<R: Rng>(
+    fn flip_site_chunk<C: Color, R: Rng>(
         rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
-        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
+        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64, adjacency: &[Vec<usize>; 8]
     ) -> u64 {
-        let curr_vals = f64x8::from_slice(chunk);
+        let curr_vals = SimdFType::from_slice(chunk);
 
         // `idx` is only the chunk index, convert the chunk index to 8 site indices.
-        const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-        const TWO: usizex8 = usizex8::splat(2);
-
-        let site_idxs = (usizex8::splat(idx) + CTR) * TWO;
+        let site_idxs = (SimdUType::splat(idx) + CTR) * TWO;
 
         // Generate flip probabilities
-        let mut offset = f64x8::splat(0.0);
-        let mut realized = f64x8::splat(0.0);
+        let mut offset = SimdFType::splat(0.0);
+        let mut realized = SimdFType::splat(0.0);
 
-        for i in 0..8 {
+        for i in 0..LANES {
             offset[i] = rng.random_range(-step_size..step_size);
             realized[i] = rng.random_range(0.0..1.0);
         }
@@ -151,19 +177,19 @@ impl System {
         let new_vals = curr_vals + offset;
 
         let action_deltas = {
-            let mut der_sum = f64x8::splat(0.0);
-            let mut new_der_sum = f64x8::splat(0.0);
+            let mut der_sum = SimdFType::splat(0.0);
+            let mut new_der_sum = SimdFType::splat(0.0);
 
-            let a = f64x8::splat(spacing);
-            let div_a = f64x8::splat(1.0) / a;
+            let a = SimdFType::splat(spacing);
+            let div_a = SimdFType::splat(1.0) / a;
 
             for i in 0..4 {
                 // FIXME: request actual neighbour indices
-                let fneigh_idxs = find_fneighbors(site_idxs, dimensions, i);
-                let bneigh_idxs = find_bneighbors(site_idxs, dimensions, i);
+                let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
+                let bneigh_idxs = find_bneighbors_red(site_idxs, adjacency, i);
 
-                let fneigh_vals = f64x8::gather_or_default(neigh_sites, fneigh_idxs / TWO);
-                let bneigh_vals = f64x8::gather_or_default(neigh_sites, bneigh_idxs / TWO);
+                let fneigh_vals = SimdFType::gather_or_default(neigh_sites, fneigh_idxs / TWO);
+                let bneigh_vals = SimdFType::gather_or_default(neigh_sites, bneigh_idxs / TWO);
 
                 {
                     let f1_sqrt = (fneigh_vals - curr_vals) * div_a;
@@ -186,11 +212,11 @@ impl System {
                 }
             }
 
-            const HALF: f64x8 = f64x8::splat(0.5);
-            const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);;
+            const HALF: SimdFType = SimdFType::splat(0.5);
+            const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);;
 
-            let msquared = f64x8::splat(mass_squared);
-            let coupling = f64x8::splat(coupling);
+            let msquared = SimdFType::splat(mass_squared);
+            let coupling = SimdFType::splat(coupling);
 
             let curr_vals2 = curr_vals * curr_vals;
             let new_vals2 = new_vals * new_vals;
@@ -262,12 +288,14 @@ impl System {
 
             let step_size = self.current_step_size();
 
-            let action = &mut self.data.stats.current_action;
             let accepted_moves = &self.data.stats.accepted_moves;
             let total_moves = &self.data.stats.total_moves;
 
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
+
+            let red_adjacency = &self.data.lattice.red_adjacency;
+            let black_adjacency = &self.data.lattice.black_adjacency;
 
             red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
                 || {
@@ -275,15 +303,15 @@ impl System {
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    let new_accepted_moves = Self::flip_site_chunk(
+                    let new_accepted_moves = Self::flip_site_chunk::<Red, _>(
                         rng, j, chunk, black_sites,
                         dimensions,
                         spacing, step_size,
-                        mass_squared, coupling
+                        mass_squared, coupling, red_adjacency
                     );
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
-                    total_moves.fetch_add(8, Ordering::SeqCst);
+                    total_moves.fetch_add(LANES as u64, Ordering::SeqCst);
                 }
             );
 
@@ -295,15 +323,15 @@ impl System {
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
                 },
                 |rng, (j, chunk)| {
-                    let new_accepted_moves = Self::flip_site_chunk(
+                    let new_accepted_moves = Self::flip_site_chunk::<Black, _>(
                         rng, j, chunk, red_sites,
                         dimensions,
                         spacing, step_size,
-                        mass_squared, coupling
+                        mass_squared, coupling, black_adjacency
                     );
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
-                    total_moves.fetch_add(8, Ordering::SeqCst);
+                    total_moves.fetch_add(LANES as u64, Ordering::SeqCst);
                 }
             );
 
@@ -388,34 +416,32 @@ impl System {
     pub fn compute_full_action(&self) -> f64 {
         // TODO: Add sequential version
 
-        let msquared = f64x8::splat(self.mass_squared());
-        let coupling = f64x8::splat(self.coupling());
-        let spacing = f64x8::splat(self.lattice().spacing());
+        let msquared = SimdFType::splat(self.mass_squared());
+        let coupling = SimdFType::splat(self.coupling());
+        let spacing = SimdFType::splat(self.lattice().spacing());
         let a4 = spacing * spacing * spacing * spacing;
-        let div_a = f64x8::splat(1.0) / spacing;
+        let div_a = SimdFType::splat(1.0) / spacing;
         let dims = self.lattice().dimensions();
 
         // Compute action for red sites
 
         let black_sites = &self.lattice().black_sites;
+        let adjacency = &self.lattice().red_adjacency;
         let action_red = self
             .data.lattice.red_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-                const TWO: usizex8 = usizex8::splat(2);
+                let site_vals = SimdFType::from_slice(chunk);
+                let site_idxs = (SimdUType::splat(i) + CTR) * TWO;
 
-                let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x8::splat(0.0);
+                let mut der_sum = SimdFType::splat(0.0);
                 for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x8::gather_or_default(black_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x8::gather_or_default(black_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = SimdFType::gather_or_default(black_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = SimdFType::gather_or_default(black_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -423,8 +449,8 @@ impl System {
                     der_sum += f1_sqrt * f1_sqrt;
                 }
 
-                const HALF: f64x8 = f64x8::splat(0.5);
-                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+                const HALF: SimdFType = SimdFType::splat(0.5);
+                const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -436,30 +462,28 @@ impl System {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x8::splat(0.0),
+                || SimdFType::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();
 
         let red_sites = &self.lattice().red_sites;
+        let adjacency = &self.lattice().black_adjacency;
         let action_black = self
             .data.lattice.black_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-                const TWO: usizex8 = usizex8::splat(2);
+                let site_vals = SimdFType::from_slice(chunk);
+                let site_idxs = (SimdUType::splat(i) + CTR) * TWO;
 
-                let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x8::splat(0.0);
+                let mut der_sum = SimdFType::splat(0.0);
                 for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x8::gather_or_default(red_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x8::gather_or_default(red_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = SimdFType::gather_or_default(red_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = SimdFType::gather_or_default(red_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -467,8 +491,8 @@ impl System {
                     der_sum += f1_sqrt * f1_sqrt
                 }
 
-                const HALF: f64x8 = f64x8::splat(0.5);
-                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+                const HALF: SimdFType = SimdFType::splat(0.5);
+                const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -480,7 +504,7 @@ impl System {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x8::splat(0.0),
+                || SimdFType::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();

@@ -238,7 +238,7 @@ use prometheus::Encoder;
 use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
 use crate::all_public_in;
-use crate::observable_impl::{MeanValue, Variance};
+use crate::observable_impl::{MeanSqValue, MeanValue, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     let inc = new_value - ctr.get();
@@ -342,6 +342,7 @@ impl System {
 
         self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
         self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
+        self.measured::<MeanSqValue>().inspect(|&v| self.metrics.meansq.set(v));
 
         let metrics = &mut self.metrics;
 

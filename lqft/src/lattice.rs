@@ -1,3 +1,4 @@
+use std::array::from_fn;
 use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
 use anyhow::Context;
 use hdf5_metno as hdf5;
@@ -12,14 +13,15 @@ use std::str::FromStr;
 use rayon::prelude::*;
 
 /// 2 adjacent indices in each dimension.
-type AdjacentIndices = [usize; 8];
+type AdjacentIndices = Vec<[usize; 8]>;
 
 #[derive(Clone)]
 pub struct Lattice {
     iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
-    adjacency: Vec<AdjacentIndices>,
+    pub red_adjacency: [Vec<usize>; 8],
+    pub black_adjacency: [Vec<usize>; 8],
 
     pub(crate) red_sites: Vec<f64>,
     pub(crate) black_sites: Vec<f64>
@@ -191,27 +193,31 @@ impl Lattice {
     }
 
     /// Generates an adjacency table for the specified lattice.
-    fn generate_adjacency(&mut self) -> Vec<AdjacentIndices> {
-        let total_indices = self.sweep_size();
-        let mut table = Vec::with_capacity(total_indices);
+    fn generate_adjacency(&mut self) {
+        let count = self.sweep_size().div_ceil(2);
+        let mut red_table = std::array::from_fn(|_| Vec::with_capacity(count));
+        let mut black_table = std::array::from_fn(|_| Vec::with_capacity(count));
 
-        for i in 0..total_indices {
-            let mut neighbors = [0; 8];
+        for i in 0..4 {
+            for j in 0..self.sweep_size() {
+                let fneigh = self.get_forward_neighbor(j, i);
+                let fneigh_idx = self.to_index(fneigh);
+                let bneigh = self.get_backward_neighbor(j, i);
+                let bneigh_idx = self.to_index(bneigh);
 
-            for j in 0..4 {
-                let fneigh = self.get_forward_neighbor(i, j);
-                let fneigh_index = self.to_index(fneigh);
-                neighbors[2 * j] = fneigh_index;
-
-                let bneigh = self.get_backward_neighbor(i, j);
-                let bneigh_index = self.to_index(bneigh);
-                neighbors[2 * j + 1] = bneigh_index;
+                let coord = self.from_index(j);
+                if self.is_red(coord) {
+                    red_table[i].push(fneigh_idx);
+                    red_table[4 + i].push(bneigh_idx);
+                } else {
+                    black_table[i].push(fneigh_idx);
+                    black_table[4 + i].push(bneigh_idx);
+                }
             }
-
-            table.push(neighbors);
         }
 
-        table
+        self.red_adjacency = red_table;
+        self.black_adjacency = black_table;
     }
 
     pub fn spacing(&self) -> f64 {
@@ -314,6 +320,10 @@ impl Lattice {
         self.meansq_par() - mean * mean
     }
 
+    pub fn autocorrelation_function(&self, time: usize) -> f64 {
+        todo!()
+    }
+
     /// Fills the data with a fixed value.
     pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
         let count = dimensions.iter().product::<usize>().div_ceil(2);
@@ -325,7 +335,7 @@ impl Lattice {
             red_sites, black_sites,
             spacing,
             dimensions,
-            adjacency: Vec::new(),
+            red_adjacency: Default::default(), black_adjacency: Default::default()
         };
         lattice.generate_adjacency();
 
@@ -360,7 +370,7 @@ impl Lattice {
             red_sites, black_sites,
             spacing,
             dimensions,
-            adjacency: Vec::new(),
+            red_adjacency: Default::default(), black_adjacency: Default::default()
         };
         lattice.generate_adjacency();
 

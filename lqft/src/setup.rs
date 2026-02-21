@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
 use crate::observable::{Observable, ObservableRegistry};
-use crate::sim::SystemData;
+use crate::sim::{SystemData, LANES};
 use crate::metrics::MetricState;
 
 impl System {
@@ -57,7 +57,7 @@ impl System {
                 .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
 
-            tracing::debug!("Step size corrected downwards to {:.2}", size.unwrap() * correction);
+            tracing::debug!("Step size corrected downwards to {:.2} (ratio is {acceptance_ratio:.2})", size.unwrap() * correction);
         } else if acceptance_ratio > self.data.acceptance_desc.desired_range.end {
             let correction = 1.0 + self.data.acceptance_desc.correction_size;
             let size = self
@@ -65,7 +65,7 @@ impl System {
                 .current_step_size
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
 
-            tracing::debug!("Step size corrected upwards to {:.2}", size.unwrap() * correction);
+            tracing::debug!("Step size corrected upwards to {:.2} (ratio is {acceptance_ratio:.2})", size.unwrap() * correction);
         }
     }
 }
@@ -434,8 +434,8 @@ impl SystemBuilder {
         tracing::info!("Finished configuration, building simulation...");
 
         if let LatticeDesc::Create(desc) = &self.lattice_desc {
-            if desc.dimensions.iter().sum::<usize>() % 2 != 0 {
-                anyhow::bail!("Lattice size must be an even number");
+            if desc.dimensions.iter().sum::<usize>() % LANES != 0 {
+                anyhow::bail!("Lattice size must be divisible by {LANES}");
             }
         }
 

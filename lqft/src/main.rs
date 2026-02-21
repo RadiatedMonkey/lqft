@@ -15,7 +15,7 @@ use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::observable_impl::{MeanValue, Variance};
+use crate::observable_impl::{MeanSqValue, MeanValue, Variance};
 
 /// Makes all struct fields public in the current and specified modules.
 /// This makes it easier to spread implementation details over multiple archive.
@@ -59,11 +59,13 @@ async fn app() -> anyhow::Result<()> {
         .with(layer)
         .init();
 
+    rayon::ThreadPoolBuilder::new().num_threads(12).build_global()?;
+
     tokio::spawn(task);
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
-            mass_squared: 1.0,
+            mass_squared: -1.0,
             coupling: 1.0,
         })
         // .enable_snapshot(SnapshotDesc {
@@ -81,11 +83,12 @@ async fn app() -> anyhow::Result<()> {
             lattice_iter: LatticeIterMethod::Parallel
         })
         .with_observable::<MeanValue>()
+        .with_observable::<MeanSqValue>()
         .with_observable::<Variance>()
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
-            initial_step_size: 1.0,
-            desired_range: 0.3..0.5,
+            initial_step_size: 0.4,
+            desired_range: 0.4..0.7,
             correction_size: 0.05,
         })
         .with_burn_in(BurnInDesc {
@@ -97,7 +100,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 5_000;
+    let total_sweeps = 1000_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
