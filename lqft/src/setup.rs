@@ -344,7 +344,7 @@ impl Default for ParamDesc {
 /// Used to configure a lattice simulation.
 pub struct SystemBuilder<const LatticeDim: usize> {
     performance_desc: PerformanceDesc,
-    observables: ObservableRegistry,
+    observables: ObservableRegistry<LatticeDim>,
     param_desc: ParamDesc,
     lattice_desc: LatticeDesc<LatticeDim>,
     acceptance_desc: AcceptanceDesc,
@@ -384,7 +384,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
         self
     }
 
-    pub fn with_observable<O: Observable>(mut self) -> Self {
+    pub fn with_observable<O: Observable<Dim>>(mut self) -> Self {
         self.observables.register::<O>();
         self
     }

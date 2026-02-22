@@ -1,6 +1,7 @@
 use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
 use anyhow::Context;
 use hdf5_metno as hdf5;
+use itertools::Itertools;
 use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
 use num_traits::Pow;
 use rand::{Rng, RngExt};
@@ -160,7 +161,6 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Returns odd and even indices.
     pub fn generate_checkerboard_indices(&self) -> (Vec<usize>, Vec<usize>) {
-        let [st, sx, sy, sz] = self.dimensions;
         let stotal: usize = self.dimensions.iter().sum();
 
         let mut red = Vec::with_capacity(stotal / 2 + 1);
@@ -168,19 +168,18 @@ impl<const Dim: usize> Lattice<Dim> {
 
         tracing::debug!("Generating checkerboard indices...");
 
-        // Generate red indices
-        for t in 0..st {
-            for x in 0..sx {
-                for y in 0..sy {
-                    for z in 0..sz {
-                        let index = self.to_index([t, x, y, z]);
-                        if (t + x + y + z) % 2 == 0 {
-                            red.push(index);
-                        } else {
-                            black.push(index);
-                        }
-                    }
-                }
+        let dim_ranges = self.dimensions.iter().copied().map(|d| 0..d);
+        let mesh_iter = dim_ranges.multi_cartesian_product();
+        
+        for site in mesh_iter {
+            let coord = site.try_into().unwrap();
+
+            let idx = self.to_index(coord);
+            let is_red = coord.iter().sum::<usize>() % 2 == 0;
+            if is_red {
+                red.push(idx);
+            } else {
+                black.push(idx);
             }
         }
 
@@ -366,18 +365,29 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Converts a lattice index to a coordinate
     pub fn from_index(&self, i: usize) -> [usize; Dim] {
-        let [_, sx, sy, sz] = self.dimensions;
-        let z = i % sz;
+        let mut coord = [0; Dim];
 
-        let rem = (i - z) / sz;
-        let y = rem % sy;
+        let mut rem = i;
+        for d in Dim..0 {
+            let comp = rem % self.dimensions[d] / self.dimensions.get(d + 1).copied().unwrap_or(0);
+            rem = (rem - comp) / self.dimensions[d];
+            coord[d] = comp;
+        }
 
-        let rem = (rem - y) / sy;
-        let x = rem % sx;
+        coord
 
-        let t = (rem - x) / sx;
+        // let [_, sx, sy, sz] = self.dimensions;
+        // let z = i % sz;
 
-        [t, x, y, z]
+        // let rem = (i - z) / sz;
+        // let y = rem % sy;
+
+        // let rem = (rem - y) / sy;
+        // let x = rem % sx;
+
+        // let t = (rem - x) / sx;
+
+        // [t, x, y, z]
     }
 
     #[inline]

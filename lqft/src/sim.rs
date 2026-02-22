@@ -62,16 +62,13 @@ pub struct SystemData<const LatticeDim: usize> {
     pub successful_therm_checks: usize
 }
 
-all_public_in!(
-    super,
-    pub struct System {
-        simulating: AtomicBool,
-        metrics: MetricState,
-        snapshot_state: Option<SnapshotState>,
-        observables: ObservableRegistry,
-        data: SystemData
-    }
-);
+pub struct System<const LatticeDim: usize> {
+    pub simulating: AtomicBool,
+    pub metrics: MetricState,
+    pub snapshot_state: Option<SnapshotState<LatticeDim>>,
+    pub observables: ObservableRegistry<LatticeDim>,
+    pub data: SystemData<LatticeDim>
+}
 
 #[inline(always)]
 fn to_coord(idx: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
