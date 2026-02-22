@@ -2,7 +2,7 @@
 
 use std::cell::UnsafeCell;
 use std::hint::black_box;
-use std::simd::{Select, Simd, StdFloat, ToBytes, f64x4};
+use std::simd::{Select, Simd, StdFloat, ToBytes, f32x4, f64x4};
 use std::simd::cmp::SimdPartialOrd;
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::RngExt;
@@ -10,9 +10,10 @@ use rand::rngs::Xoshiro256PlusPlus;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
 use rayon::prelude::*;
 
-type SimdFType = f64x4;
+type FType = f32;
+type SimdFType = f32x4;
 
-struct SyncWrapper(pub Vec<UnsafeCell<f64>>);
+struct SyncWrapper(pub Vec<UnsafeCell<FType>>);
 
 unsafe impl Send for SyncWrapper {}
 unsafe impl Sync for SyncWrapper {}
@@ -24,8 +25,8 @@ struct GlobalLattice {
 }
 
 struct ColoredLattice {
-    black: Vec<f64>,
-    red: Vec<f64>,
+    black: Vec<FType>,
+    red: Vec<FType>,
 }
 
 fn old_flip(lattice: &mut GlobalLattice) {
@@ -114,7 +115,7 @@ fn contig_flip(lattice: &mut ColoredLattice) {
         let prob = (curr - new_val).exp();
         let realised = rng.random_range(0.0..1.0);
 
-        let keep_new = (realised > prob) as i64 as f64;
+        let keep_new = (realised > prob) as i64 as FType;
         *site = new_val * keep_new + curr * (1.0 - keep_new);
     });
 
@@ -131,7 +132,7 @@ fn contig_flip(lattice: &mut ColoredLattice) {
             let prob = (curr - new_val).exp();
             let realised = rng.random_range(0.0..1.0);
 
-            let keep_new = (realised > prob) as i64 as f64;
+            let keep_new = (realised > prob) as i64 as FType;
             *site = new_val * keep_new + curr * (1.0 - keep_new);
 
             // if realised > prob {
@@ -150,8 +151,8 @@ fn simd_flip(lattice: &mut ColoredLattice) {
         |rng, chunk| {
             let curr = SimdFType::from_slice(chunk);
 
-            let mut rand_vals = [0.0f64; LANES];
-            let mut probs = [0.0f64; LANES];
+            let mut rand_vals = [0.0; LANES];
+            let mut probs = [0.0; LANES];
 
             for i in 0..LANES {
                 rand_vals[i] = rng.random_range(-0.5..0.5);
@@ -179,8 +180,8 @@ fn simd_flip(lattice: &mut ColoredLattice) {
         |rng, chunk| {
             let curr = SimdFType::from_slice(chunk);
 
-            let mut probs = [0.0f64; LANES];
-            let mut rand_vals = [0.0f64; LANES];
+            let mut probs = [0.0; LANES];
+            let mut rand_vals = [0.0; LANES];
 
             for i in 0..LANES {
                 rand_vals[i] = rng.random_range(-0.5..0.5);
@@ -256,12 +257,12 @@ fn simd_flip2(lattice: &mut ColoredLattice) {
     );
 }
 
-fn gen_random_vec(len: usize) -> Vec<f64> {
+fn gen_random_vec(len: usize) -> Vec<FType> {
     let mut rng = rand::rng();
     (0..len).map(|_| rng.random_range(-1.0..1.0)).collect()
 }
 
-fn gen_random_interior_vec(len: usize) -> Vec<UnsafeCell<f64>> {
+fn gen_random_interior_vec(len: usize) -> Vec<UnsafeCell<FType>> {
     let mut rng = rand::rng();
     (0..len).map(|_| UnsafeCell::new(rng.random_range(-1.0..1.0))).collect()
 }

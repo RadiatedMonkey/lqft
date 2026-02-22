@@ -4,26 +4,28 @@ use std::hint::black_box;
 use rand::prelude::*;
 use rayon::prelude::*;
 
+type FType = f32;
+
 #[inline]
-fn par_sum(size: usize) -> f64 {
+fn par_sum(size: usize) -> FType {
     let mut rng = rand::rng();
 
     let rand_vec = (0..size)
         .map(|_| rng.random_range(-1.0..1.0))
         .collect::<Vec<_>>();
 
-    rand_vec.par_iter().sum::<f64>()
+    rand_vec.par_iter().sum::<FType>()
 }
 
 #[inline]
-fn single_sum(size: usize) -> f64 {
+fn single_sum(size: usize) -> FType {
     let mut rng = rand::rng();
 
     let rand_vec = (0..size)
         .map(|_| rng.random_range(-1.0..1.0))
         .collect::<Vec<_>>();
 
-    rand_vec.iter().sum::<f64>()
+    rand_vec.iter().sum::<FType>()
 }
 
 fn par_sum_benchmark(c: &mut Criterion) {

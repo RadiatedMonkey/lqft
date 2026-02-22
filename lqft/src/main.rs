@@ -107,7 +107,7 @@ async fn app() -> anyhow::Result<()> {
 
     // let stats = sim.stats();
 
-    // let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
+    // let sweepx = (0..total_sweeps).map(|i| i as FType).collect::<Vec<_>>();
     //
     // let variance = stats
     //     .mean_history
@@ -117,19 +117,19 @@ async fn app() -> anyhow::Result<()> {
     //     .collect::<Vec<_>>();
     //
     // let tdata = (0..sim.lattice().dimensions()[0])
-    //     .map(|v| v as f64)
+    //     .map(|v| v as FType)
     //     .collect::<Vec<_>>();
     // // let corr2 = sim.correlator2();
     //
     // let stats_time_mapped = stats
     //     .stats_time_history
     //     .iter()
-    //     .map(|&t| t as f64)
+    //     .map(|&t| t as FType)
     //     .collect::<Vec<_>>();
     // let sweep_time_mapped = stats
     //     .sweep_time_history
     //     .iter()
-    //     .map(|&t| t as f64)
+    //     .map(|&t| t as FType)
     //     .collect::<Vec<_>>();
     //
     // let desc = GraphDesc {

@@ -2,17 +2,14 @@ use crate::lattice::Lattice;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
-use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
-use num_traits::Pow;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
-use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
+use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
-use std::ops::{Div, Range};
 use std::simd::num::SimdFloat;
-use std::simd::{Select, Simd, StdFloat};
+use std::simd::{Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool};
@@ -20,7 +17,7 @@ use std::time::Instant;
 use rand::RngExt;
 use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
-use crate::util::{SimdFType, SimdUType, SIMD_LANES};
+use crate::util::{AtomicFType, FType, SIMD_LANES, SimdFType, SimdUType};
 
 const CTR: SimdUType = SimdUType::from_array([0, 1, 2, 3]);
 const TWO: SimdUType = SimdUType::splat(2);
@@ -29,14 +26,14 @@ const TWO: SimdUType = SimdUType::splat(2);
 #[derive(H5Type, Serialize, Deserialize)]
 #[repr(C)]
 pub struct SystemSettings {
-    pub spacing: f64,
-    pub step_size: f64,
-    pub mass_squared: f64,
-    pub coupling: f64,
+    pub spacing: FType,
+    pub step_size: FType,
+    pub mass_squared: FType,
+    pub coupling: FType,
 }
 
-impl From<SystemSettings> for [f64; 4] {
-    fn from(settings: SystemSettings) -> [f64; 4] {
+impl From<SystemSettings> for [FType; 4] {
+    fn from(settings: SystemSettings) -> [FType; 4] {
         [
             settings.spacing,
             settings.step_size,
@@ -48,15 +45,15 @@ impl From<SystemSettings> for [f64; 4] {
 
 pub struct SystemData<const LatticeDim: usize> {
     pub lattice: Lattice<LatticeDim>,
-    pub mass_squared: f64,
-    pub coupling: f64,
+    pub mass_squared: FType,
+    pub coupling: FType,
     pub acceptance_desc: AcceptanceDesc,
     pub burn_in_desc: BurnInDesc,
     /// A vector for every possible C(t)
     /// where the inner vector is for every sweep
-    pub correlation_slices: Vec<f64>,
+    pub correlation_slices: Vec<FType>,
     pub measurement_interval: usize,
-    pub current_step_size: AtomicF64,
+    pub current_step_size: AtomicFType,
     pub stats: SystemStats,
     pub successful_therm_checks: usize
 }
@@ -131,8 +128,8 @@ impl<const Dim: usize> System<Dim> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
-        rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; Dim],
-        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
+        rng: &mut R, idx: usize, chunk: &mut [FType], neigh_sites: &[FType], dimensions: [usize; Dim],
+        spacing: FType, step_size: FType, mass_squared: FType, coupling: FType
     ) -> u64 {
         let curr_vals = SimdFType::from_slice(chunk);
 
@@ -354,7 +351,7 @@ impl<const Dim: usize> System<Dim> {
         self.push_metrics();
 
         for t in 0..self.data.lattice.dimensions()[0] {
-            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as f64;
+            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as FType;
         }
 
         tracing::info!("Run completed");
@@ -364,7 +361,7 @@ impl<const Dim: usize> System<Dim> {
 
     /// Obtains the latest measurements of the given observable.
     #[inline]
-    pub fn measured<O: Observable<Dim>>(&self) -> Option<f64> {
+    pub fn measured<O: Observable<Dim>>(&self) -> Option<FType> {
         self.observables.measured::<O>()
     }
 
@@ -377,12 +374,12 @@ impl<const Dim: usize> System<Dim> {
     }
 
     /// Computes the autocorrelation time of the system in its current state.
-    fn compute_autocorrelation(&self) -> f64 {
+    fn compute_autocorrelation(&self) -> FType {
         todo!()
     }
 
     /// Computes the absolute action of the entire lattice.
-    pub fn compute_full_action(&self) -> f64 {
+    pub fn compute_full_action(&self) -> FType {
         // TODO: Add sequential version
 
         let msquared = SimdFType::splat(self.mass_squared());
@@ -479,7 +476,7 @@ impl<const Dim: usize> System<Dim> {
         action_red + action_black
     }
 
-    fn get_timeslice(&mut self) -> Vec<f64> {
+    fn get_timeslice(&mut self) -> Vec<FType> {
         todo!()
         // Compute the spatial sum for every time slice
         // let st = self.data.lattice.dim_t();
@@ -505,11 +502,11 @@ impl<const Dim: usize> System<Dim> {
     /// The current thermalisation ratio threshold.
     ///
     /// See [`SystemBuilder::th_threshold`] for more information.
-    pub fn th_threshold(&self) -> f64 {
+    pub fn th_threshold(&self) -> FType {
         self.data.burn_in_desc.required_ratio
     }
 
-    pub fn current_step_size(&self) -> f64 {
+    pub fn current_step_size(&self) -> FType {
         self.data.current_step_size.load(Ordering::Relaxed)
     }
 
@@ -520,17 +517,17 @@ impl<const Dim: usize> System<Dim> {
         self.data.burn_in_desc.block_size
     }
 
-    pub fn correlator2(&self) -> &[f64] {
+    pub fn correlator2(&self) -> &[FType] {
         &self.data.correlation_slices
     }
 
     /// The current mass squared.
-    pub fn mass_squared(&self) -> f64 {
+    pub fn mass_squared(&self) -> FType {
         self.data.mass_squared
     }
 
     /// The current coupling constant.
-    pub fn coupling(&self) -> f64 {
+    pub fn coupling(&self) -> FType {
         self.data.coupling
     }
 
