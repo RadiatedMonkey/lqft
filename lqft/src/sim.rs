@@ -47,8 +47,8 @@ impl From<SystemSettings> for [f64; 4] {
     }
 }
 
-pub struct SystemData {
-    pub lattice: Lattice,
+pub struct SystemData<const LatticeDim: usize> {
+    pub lattice: Lattice<LatticeDim>,
     pub mass_squared: f64,
     pub coupling: f64,
     pub acceptance_desc: AcceptanceDesc,

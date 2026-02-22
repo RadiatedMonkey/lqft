@@ -1,15 +1,14 @@
 //! Implementations of basic observables.
 
 use std::any::Any;
-use crate::observable::*;
 
 use crate::observable::{MeasureFrequency, Observable, ObservableState};
-use crate::sim::{System, SystemData};
+use crate::sim::SystemData;
 
 /// Measures the mean of the lattice.
 pub struct MeanValue;
 
-impl Observable for MeanValue {
+impl<const Dim: usize> Observable<Dim> for MeanValue {
     type State = MeanValueState;
 
     const NAME: &'static str = "mean_value";
@@ -23,7 +22,7 @@ pub struct MeanValueState {
     data: Vec<f64>
 }
 
-impl ObservableState for MeanValueState {
+impl<const Dim: usize> ObservableState<Dim> for MeanValueState {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -36,7 +35,7 @@ impl ObservableState for MeanValueState {
         false
     }
 
-    fn measure(&mut self, data: &SystemData) {
+    fn measure(&mut self, data: &SystemData<Dim>) {
         let mean = data.lattice.mean_seq();
         self.data.push(mean);
     }
@@ -57,7 +56,7 @@ impl ObservableState for MeanValueState {
 /// Measures the variance of the lattice.
 pub struct Variance;
 
-impl Observable for Variance {
+impl<const Dim: usize> Observable<Dim> for Variance {
     type State = VarianceState;
 
     const NAME: &'static str = "variance";
@@ -71,7 +70,7 @@ pub struct VarianceState {
     data: Vec<f64>
 }
 
-impl ObservableState for VarianceState {
+impl<const Dim: usize> ObservableState<Dim> for VarianceState {
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -84,7 +83,7 @@ impl ObservableState for VarianceState {
         false
     }
 
-    fn measure(&mut self, data: &SystemData) {
+    fn measure(&mut self, data: &SystemData<Dim>) {
         let mean = data.lattice.variance();
         self.data.push(mean);
     }

@@ -352,7 +352,16 @@ impl<const Dim: usize> Lattice<Dim> {
     /// Converts a lattice coordinate to an index.
     /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
     pub fn to_index(&self, coords: [usize; Dim]) -> usize {
-        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
+        let mut mult = 1;
+        let mut idx = 0;
+        for d in Dim..0 {
+            idx += coords[d] * mult;            
+            mult *= self.dimensions[d];
+        }
+
+        idx
+
+        // (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
     }
 
     /// Converts a lattice index to a coordinate
