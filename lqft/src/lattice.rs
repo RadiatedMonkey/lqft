@@ -1,6 +1,7 @@
 use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
 use anyhow::Context;
 use hdf5_metno as hdf5;
+use itertools::Itertools;
 use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
 use num_traits::Pow;
 use rand::{Rng, RngExt};
@@ -15,20 +16,20 @@ use rayon::prelude::*;
 type AdjacentIndices = [usize; 8];
 
 #[derive(Clone)]
-pub struct Lattice {
+pub struct Lattice<const Dim: usize> {
     iter_method: LatticeIterMethod,
     spacing: f64,
-    dimensions: [usize; 4],
+    dimensions: [usize; Dim],
 
     pub(crate) red_sites: Vec<f64>,
     pub(crate) black_sites: Vec<f64>
 }
 
-unsafe impl Send for Lattice {}
-unsafe impl Sync for Lattice {}
+unsafe impl<const Dim: usize> Send for Lattice<Dim> {}
+unsafe impl<const Dim: usize> Sync for Lattice<Dim> {}
 
-impl Lattice {
-    pub fn new(desc: LatticeCreateDesc, iter_method: LatticeIterMethod) -> Self {
+impl<const Dim: usize> Lattice<Dim> {
+    pub fn new(desc: LatticeCreateDesc<Dim>, iter_method: LatticeIterMethod) -> Self {
         match desc.initial_state {
             InitialState::Fixed(val) => Lattice::filled(desc.dimensions, desc.spacing, iter_method, val),
             InitialState::RandomRange(range) => {
@@ -160,7 +161,6 @@ impl Lattice {
 
     /// Returns odd and even indices.
     pub fn generate_checkerboard_indices(&self) -> (Vec<usize>, Vec<usize>) {
-        let [st, sx, sy, sz] = self.dimensions;
         let stotal: usize = self.dimensions.iter().sum();
 
         let mut red = Vec::with_capacity(stotal / 2 + 1);
@@ -168,19 +168,18 @@ impl Lattice {
 
         tracing::debug!("Generating checkerboard indices...");
 
-        // Generate red indices
-        for t in 0..st {
-            for x in 0..sx {
-                for y in 0..sy {
-                    for z in 0..sz {
-                        let index = self.to_index([t, x, y, z]);
-                        if (t + x + y + z) % 2 == 0 {
-                            red.push(index);
-                        } else {
-                            black.push(index);
-                        }
-                    }
-                }
+        let dim_ranges = self.dimensions.iter().copied().map(|d| 0..d);
+        let mesh_iter = dim_ranges.multi_cartesian_product();
+        
+        for site in mesh_iter {
+            let coord = site.try_into().unwrap();
+
+            let idx = self.to_index(coord);
+            let is_red = coord.iter().sum::<usize>() % 2 == 0;
+            if is_red {
+                red.push(idx);
+            } else {
+                black.push(idx);
             }
         }
 
@@ -189,57 +188,13 @@ impl Lattice {
         (red, black)
     }
 
-    /// Generates an adjacency table for the specified lattice.
-    fn generate_adjacency(&mut self) -> Vec<AdjacentIndices> {
-        let total_indices = self.sweep_size();
-        let mut table = Vec::with_capacity(total_indices);
-
-        for i in 0..total_indices {
-            let mut neighbors = [0; 8];
-
-            for j in 0..4 {
-                let fneigh = self.get_forward_neighbor(i, j);
-                let fneigh_index = self.to_index(fneigh);
-                neighbors[2 * j] = fneigh_index;
-
-                let bneigh = self.get_backward_neighbor(i, j);
-                let bneigh_index = self.to_index(bneigh);
-                neighbors[2 * j + 1] = bneigh_index;
-            }
-
-            table.push(neighbors);
-        }
-
-        table
-    }
-
     pub fn spacing(&self) -> f64 {
         self.spacing
     }
 
     /// The dimensions of the lattice
-    pub fn dimensions(&self) -> [usize; 4] {
+    pub fn dimensions(&self) -> [usize; Dim] {
         self.dimensions
-    }
-
-    /// The size of the lattice in the `t` dimension.
-    pub fn dim_t(&self) -> usize {
-        self.dimensions[0]
-    }
-
-    /// The size of the lattice in the `x` dimension.
-    pub fn dim_x(&self) -> usize {
-        self.dimensions[1]
-    }
-
-    /// The size of the lattice in the `y` dimension.
-    pub fn dim_y(&self) -> usize {
-        self.dimensions[2]
-    }
-
-    /// The size of the lattice in the `z` dimension.
-    pub fn dim_z(&self) -> usize {
-        self.dimensions[3]
     }
 
     pub fn mean(&self) -> f64 {
@@ -314,8 +269,8 @@ impl Lattice {
     }
 
     /// Fills the data with a fixed value.
-    pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
+    pub fn filled(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
+        let count = dims.iter().product::<usize>().div_ceil(2);
         let red_sites = vec![fill_value; count];
         let black_sites = vec![fill_value; count];
 
@@ -323,22 +278,21 @@ impl Lattice {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions
+            dimensions: dims
         }
     }
 
     /// Fills the data with zeroes.
     #[inline]
-    pub fn zeroed(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod) -> Self {
-        Self::filled(dimensions, spacing, iter_method, 0.0)
+    pub fn zeroed(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod) -> Self {
+        Self::filled(dims, spacing, iter_method, 0.0)
     }
 
     /// Fills the lattice with random data from a range.
-    pub fn random(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
-        let [t, x, y, z] = dimensions;
-        tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
+    pub fn random(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
+        tracing::debug!("Generating random scalar lattice of dimensions {dims:?}...");
 
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
+        let count = dims.iter().product::<usize>().div_ceil(2);
         let mut rng = rand::rng();
 
         // Seems like I need to clone `range` because the map function can only capture it once.
@@ -354,29 +308,29 @@ impl Lattice {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions
+            dimensions: dims
         }
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
-    pub fn get_forward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
+    pub fn get_forward_neighbor(&self, orig: usize, dir: usize) -> [usize; Dim] {
         // if !self.adjacency.is_empty() {
         //     return self.from_index(self.adjacency[orig][dir * 2])
         // }
 
-        let mut dir_vec = [0; 4];
+        let mut dir_vec = [0; Dim];
         dir_vec[dir] = 1;
 
         self.get_relative(self.from_index(orig), dir_vec)
     }
 
     /// Gets the neighbor in the given backward direction. This implements wrapping of the boundaries.
-    pub fn get_backward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
+    pub fn get_backward_neighbor(&self, orig: usize, dir: usize) -> [usize; Dim] {
         // if !self.adjacency.is_empty() {
         //     return self.from_index(self.adjacency[orig][dir * 2 + 1])
         // }
 
-        let mut dir_vec = [0; 4];
+        let mut dir_vec = [0; Dim];
         dir_vec[dir] = -1;
 
         self.get_relative(self.from_index(orig), dir_vec)
@@ -384,8 +338,8 @@ impl Lattice {
 
     /// Gets the coordinates of a site relative to the current one in the given direction. This is necessary to introduce
     /// wrapping at the boundaries of the lattice.
-    pub fn get_relative(&self, orig: [usize; 4], dir: [isize; 4]) -> [usize; 4] {
-        let mut neighbor = [0; 4];
+    pub fn get_relative(&self, orig: [usize; Dim], dir: [isize; Dim]) -> [usize; Dim] {
+        let mut neighbor = [0; Dim];
         for i in 0..4 {
             let ni = (orig[i] as isize + dir[i]).rem_euclid(self.dimensions[i] as isize) as usize;
             neighbor[i] = ni;
@@ -396,35 +350,58 @@ impl Lattice {
 
     /// Converts a lattice coordinate to an index.
     /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
-    pub fn to_index(&self, [t, x, y, z]: [usize; 4]) -> usize {
-        let [st, sx, sy, sz] = self.dimensions;
+    pub fn to_index(&self, coords: [usize; Dim]) -> usize {
+        let mut mult = 1;
+        let mut idx = 0;
+        for d in (0..Dim).rev() {
+            idx += coords[d] * mult;            
+            mult *= self.dimensions[d];
+        }
 
-        debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
-        debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
-        debug_assert!(y < sy, "y coordinate out of range: {t} > {sy}");
-        debug_assert!(z < sz, "z coordinate out of range: {t} > {sz}");
+        idx
 
-        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
+        // (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
     }
 
     /// Converts a lattice index to a coordinate
-    pub fn from_index(&self, i: usize) -> [usize; 4] {
-        let [_, sx, sy, sz] = self.dimensions;
-        let z = i % sz;
+    pub fn from_index(&self, i: usize) -> [usize; Dim] {
+        // let mut coord = [0; Dim];
 
-        let rem = (i - z) / sz;
-        let y = rem % sy;
+        // let mut rem = i;
+        // for d in (0..Dim).rev() {
+        //     let comp = rem % self.dimensions[d] / self.dimensions.get(d + 1).copied().unwrap_or(1);
+        //     rem = (rem - comp) / self.dimensions[d];
+        //     coord[d] = comp;
+        // }
 
-        let rem = (rem - y) / sy;
-        let x = rem % sx;
+        // coord
 
-        let t = (rem - x) / sx;
+        let mut coords = [0; Dim];
+        let mut rem = i;
 
-        [t, x, y, z]
+        for i in (0..Dim).rev() {
+            coords[i] = rem % self.dimensions[i];
+            rem /= self.dimensions[i];
+        }
+
+        coords
+
+        // let [_, sx, sy, sz] = self.dimensions;
+        // let z = i % sz;
+
+        // let rem = (i - z) / sz;
+        // let y = rem % sy;
+
+        // let rem = (rem - y) / sy;
+        // let x = rem % sx;
+
+        // let t = (rem - x) / sx;
+
+        // [t, x, y, z]
     }
 
     #[inline]
-    fn is_red(&self, coord: [usize; 4]) -> bool {
+    fn is_red(&self, coord: [usize; Dim]) -> bool {
         coord.iter().sum::<usize>() % 2 == 0
     }
 }
@@ -459,7 +436,7 @@ mod tests {
             let coords = lattice.from_index(i);
             let idx = lattice.to_index(coords);
 
-            println!("{coords:?}");
+            println!("coords {coords:?}, idx: {idx}");
             assert_eq!(
                 i, idx,
                 "Conversion between indices and coordinates is incorrect!"
