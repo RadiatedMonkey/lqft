@@ -1,22 +1,26 @@
 #![feature(portable_simd)]
 
 mod lattice;
+mod metrics;
 mod observable;
+mod observable_impl;
 mod setup;
 mod sim;
 mod snapshot;
 mod stats;
-mod metrics;
-mod observable_impl;
 pub mod util;
 
-use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
+use crate::observable_impl::{MeanValue, Variance};
+use crate::setup::{
+    AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc,
+    LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation,
+    SnapshotType, SystemBuilder,
+};
 use std::process::ExitCode;
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::observable_impl::{MeanValue, Variance};
 
 /// Makes all struct fields public in the current and specified modules.
 /// This makes it easier to spread implementation details over multiple archive.
@@ -56,13 +60,19 @@ async fn app() -> anyhow::Result<()> {
         .build_url(Url::parse("http://127.0.0.1:3100").unwrap())?;
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(tracing_subscriber::filter::LevelFilter::TRACE))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::filter::LevelFilter::TRACE),
+        )
         .with(layer)
         .init();
 
     tokio::spawn(task);
 
-    rayon::ThreadPoolBuilder::new().num_threads(4).build_global().unwrap();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build_global()
+        .unwrap();
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
@@ -81,7 +91,7 @@ async fn app() -> anyhow::Result<()> {
             spacing: 1.0,
         }))
         .with_performance(PerformanceDesc {
-            lattice_iter: LatticeIterMethod::Parallel
+            lattice_iter: LatticeIterMethod::Parallel,
         })
         .with_observable::<MeanValue>()
         .with_observable::<Variance>()
@@ -94,7 +104,7 @@ async fn app() -> anyhow::Result<()> {
         .with_burn_in(BurnInDesc {
             block_size: 100,
             required_ratio: 0.03,
-            consecutive_passes: 5
+            consecutive_passes: 5,
         })
         .build()?;
 

@@ -27,7 +27,7 @@ pub struct SnapshotState<const Dim: usize> {
 struct JobDesc<const Dim: usize> {
     dataset: Arc<hdf5::Dataset>,
     rx: mpsc::Receiver<SnapshotFragment<Dim>>,
-    dims: [usize; Dim]
+    dims: [usize; Dim],
 }
 
 impl<const Dim: usize> SnapshotState<Dim> {
@@ -143,7 +143,7 @@ impl<const Dim: usize> SnapshotState<Dim> {
             SnapshotType::Interval(interval) => sweeps / interval,
             SnapshotType::Checkpoint => 1,
         };
-        
+
         // Theoretically I could use an array of length Dim + 1 but that opens a whole can of worms
         // called `generic_const_exprs` that is currently very unstable. Using a vec is much easier and works
         // without nightly features.
@@ -158,7 +158,8 @@ impl<const Dim: usize> SnapshotState<Dim> {
 
         let job_desc = JobDesc {
             dataset: Arc::clone(&self.dataset),
-            rx, dims
+            rx,
+            dims,
         };
 
         let method = self.desc.flush_method;

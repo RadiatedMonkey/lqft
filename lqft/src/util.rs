@@ -1,4 +1,4 @@
-use std::simd::{Simd, f32x4, f64x4, usizex4};
+use std::simd::Simd;
 
 use atomic_float::{AtomicF32, AtomicF64};
 

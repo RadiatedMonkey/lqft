@@ -1,4 +1,7 @@
-use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
+use crate::setup::{
+    InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc,
+    SnapshotLocation,
+};
 use crate::util::FType;
 use anyhow::Context;
 use hdf5_metno as hdf5;
@@ -7,8 +10,8 @@ use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
 use num_traits::Pow;
 use rand::{Rng, RngExt};
 use std::cell::UnsafeCell;
-use std::ops::{Deref, Index};
 use std::ops::Range;
+use std::ops::{Deref, Index};
 use std::str::FromStr;
 
 use rayon::prelude::*;
@@ -23,7 +26,7 @@ pub struct Lattice<const Dim: usize> {
     dimensions: [usize; Dim],
 
     pub(crate) red_sites: Vec<FType>,
-    pub(crate) black_sites: Vec<FType>
+    pub(crate) black_sites: Vec<FType>,
 }
 
 unsafe impl<const Dim: usize> Send for Lattice<Dim> {}
@@ -32,14 +35,19 @@ unsafe impl<const Dim: usize> Sync for Lattice<Dim> {}
 impl<const Dim: usize> Lattice<Dim> {
     pub fn new(desc: LatticeCreateDesc<Dim>, iter_method: LatticeIterMethod) -> Self {
         match desc.initial_state {
-            InitialState::Fixed(val) => Lattice::filled(desc.dimensions, desc.spacing, iter_method, val),
+            InitialState::Fixed(val) => {
+                Lattice::filled(desc.dimensions, desc.spacing, iter_method, val)
+            }
             InitialState::RandomRange(range) => {
                 Lattice::random(desc.dimensions, desc.spacing, iter_method, range)
             }
         }
     }
 
-    pub fn from_snapshot(desc: LatticeLoadDesc, iter_method: LatticeIterMethod) -> anyhow::Result<Self> {
+    pub fn from_snapshot(
+        desc: LatticeLoadDesc,
+        iter_method: LatticeIterMethod,
+    ) -> anyhow::Result<Self> {
         let file = hdf5::File::open(desc.hdf5_file).context("Unable to open snapshots file")?;
 
         let set = match desc.location {
@@ -120,7 +128,11 @@ impl<const Dim: usize> Lattice<Dim> {
         self.iter_method
     }
 
-    pub fn from_view(view: ArrayView4<FType>, spacing: FType, iter_method: LatticeIterMethod) -> Self {
+    pub fn from_view(
+        view: ArrayView4<FType>,
+        spacing: FType,
+        iter_method: LatticeIterMethod,
+    ) -> Self {
         let dimensions: (usize, usize, usize, usize) = view.dim();
 
         let count = view.len().div_ceil(2);
@@ -171,7 +183,7 @@ impl<const Dim: usize> Lattice<Dim> {
 
         let dim_ranges = self.dimensions.iter().copied().map(|d| 0..d);
         let mesh_iter = dim_ranges.multi_cartesian_product();
-        
+
         for site in mesh_iter {
             let coord = site.try_into().unwrap();
 
@@ -201,7 +213,7 @@ impl<const Dim: usize> Lattice<Dim> {
     pub fn mean(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.mean_seq(),
-            LatticeIterMethod::Parallel => self.mean_par()
+            LatticeIterMethod::Parallel => self.mean_par(),
         }
     }
 
@@ -226,7 +238,7 @@ impl<const Dim: usize> Lattice<Dim> {
     pub fn meansq(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.meansq_seq(),
-            LatticeIterMethod::Parallel => self.meansq_par()
+            LatticeIterMethod::Parallel => self.meansq_par(),
         }
     }
 
@@ -251,7 +263,7 @@ impl<const Dim: usize> Lattice<Dim> {
     pub fn variance(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.variance_seq(),
-            LatticeIterMethod::Parallel => self.variance_par()
+            LatticeIterMethod::Parallel => self.variance_par(),
         }
     }
 
@@ -270,16 +282,22 @@ impl<const Dim: usize> Lattice<Dim> {
     }
 
     /// Fills the data with a fixed value.
-    pub fn filled(dims: [usize; Dim], spacing: FType, iter_method: LatticeIterMethod, fill_value: FType) -> Self {
+    pub fn filled(
+        dims: [usize; Dim],
+        spacing: FType,
+        iter_method: LatticeIterMethod,
+        fill_value: FType,
+    ) -> Self {
         let count = dims.iter().product::<usize>().div_ceil(2);
         let red_sites = vec![fill_value; count];
         let black_sites = vec![fill_value; count];
 
         Self {
             iter_method,
-            red_sites, black_sites,
+            red_sites,
+            black_sites,
             spacing,
-            dimensions: dims
+            dimensions: dims,
         }
     }
 
@@ -290,7 +308,12 @@ impl<const Dim: usize> Lattice<Dim> {
     }
 
     /// Fills the lattice with random data from a range.
-    pub fn random(dims: [usize; Dim], spacing: FType, iter_method: LatticeIterMethod, range: Range<FType>) -> Self {
+    pub fn random(
+        dims: [usize; Dim],
+        spacing: FType,
+        iter_method: LatticeIterMethod,
+        range: Range<FType>,
+    ) -> Self {
         tracing::debug!("Generating random scalar lattice of dimensions {dims:?}...");
 
         let count = dims.iter().product::<usize>().div_ceil(2);
@@ -307,9 +330,10 @@ impl<const Dim: usize> Lattice<Dim> {
 
         Self {
             iter_method,
-            red_sites, black_sites,
+            red_sites,
+            black_sites,
             spacing,
-            dimensions: dims
+            dimensions: dims,
         }
     }
 
@@ -355,7 +379,7 @@ impl<const Dim: usize> Lattice<Dim> {
         let mut mult = 1;
         let mut idx = 0;
         for d in (0..Dim).rev() {
-            idx += coords[d] * mult;            
+            idx += coords[d] * mult;
             mult *= self.dimensions[d];
         }
 

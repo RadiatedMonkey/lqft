@@ -2,12 +2,12 @@
 
 use rayon::prelude::*;
 
-use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault};
-use nohash_hasher::NoHashHasher;
 use crate::sim::{System, SystemData};
 use crate::util::FType;
+use nohash_hasher::NoHashHasher;
+use std::any::{Any, TypeId};
+use std::collections::HashMap;
+use std::hash::BuildHasherDefault;
 
 pub struct ObservableRegistry<const Dim: usize> {
     map: HashMap<TypeId, Box<dyn ObservableState<Dim>>, BuildHasherDefault<NoHashHasher<u64>>>,
@@ -35,18 +35,24 @@ impl<const Dim: usize> ObservableRegistry<Dim> {
 
     /// Retrieves the state of the given observable.
     pub fn get<O: Observable<Dim>>(&self) -> Option<&O::State> {
-        self.map.get(&TypeId::of::<O>()).map(|boxed| {
-            let any = boxed.as_any();
-            boxed.as_any().downcast_ref::<O::State>()
-        }).flatten()
+        self.map
+            .get(&TypeId::of::<O>())
+            .map(|boxed| {
+                let any = boxed.as_any();
+                boxed.as_any().downcast_ref::<O::State>()
+            })
+            .flatten()
     }
 
     /// Mutably retrieves the state of the given observable.
     pub fn get_mut<O: Observable<Dim>>(&mut self) -> Option<&mut O::State> {
-        self.map.get_mut(&TypeId::of::<O>()).map(|boxed| {
-            // boxed.as_any_mut().downcast_mut::<O::State>()
-            todo!()
-        }).flatten()
+        self.map
+            .get_mut(&TypeId::of::<O>())
+            .map(|boxed| {
+                // boxed.as_any_mut().downcast_mut::<O::State>()
+                todo!()
+            })
+            .flatten()
     }
 
     /// Retrieves the last measured value of the observable.
@@ -62,7 +68,7 @@ pub enum MeasureFrequency {
     /// Every `n` autocorrelation times.
     Autocorrelation(usize),
     /// Every `n` sweeps.
-    Sweep(usize)
+    Sweep(usize),
 }
 
 // trait AsAny: Any {
@@ -82,7 +88,9 @@ pub trait ObservableState<const Dim: usize>: Send + Sync + 'static {
     /// Approximate frequency of measurements.
     fn frequency(&self) -> MeasureFrequency;
     /// Whether this observable requires thermalisation.
-    fn burn_in(&self) -> bool { true }
+    fn burn_in(&self) -> bool {
+        true
+    }
 
     /// Makes a new measurement.
     fn measure(&mut self, data: &SystemData<Dim>);
@@ -92,13 +100,15 @@ pub trait ObservableState<const Dim: usize>: Send + Sync + 'static {
     /// By default this follows the frequency defined in [`FREQUENCY`](Self::FREQUENCY).
     fn should_measure(&self, data: &SystemData<Dim>) -> bool {
         if self.burn_in() && !data.stats.thermalised_at.is_some() {
-            return false
+            return false;
         }
 
         match self.frequency() {
             MeasureFrequency::Autocorrelation(_) => todo!(),
             MeasureFrequency::Sweep(n) => data.stats.current_sweep % n == 0,
-            MeasureFrequency::Once => panic!("One-time observables should have a custom `should_measure` implementation")
+            MeasureFrequency::Once => {
+                panic!("One-time observables should have a custom `should_measure` implementation")
+            }
         }
     }
 

@@ -80,8 +80,14 @@ impl<const Dim: usize> System<Dim> {
 
         self.data.stats.accepted_move_history.push(accept);
         self.data.stats.accept_ratio_history.push(ratio);
-        self.data.stats.step_size_history.push(self.current_step_size());
-        self.data.stats.sweep_time_history.push(sweep_time.as_micros());
+        self.data
+            .stats
+            .step_size_history
+            .push(self.current_step_size());
+        self.data
+            .stats
+            .sweep_time_history
+            .push(sweep_time.as_micros());
 
         let mut stat_time_saved = false;
 

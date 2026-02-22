@@ -1,5 +1,8 @@
 //! Functionality related to initialisation of the system
 
+use crate::metrics::MetricState;
+use crate::observable::{Observable, ObservableRegistry};
+use crate::sim::SystemData;
 use crate::snapshot::SnapshotState;
 use crate::stats::SystemStats;
 use crate::util::{AtomicFType, FType};
@@ -9,9 +12,6 @@ use hdf5_metno::{self as hdf5, Extent, Extents, SimpleExtents};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
-use crate::observable::{Observable, ObservableRegistry};
-use crate::sim::SystemData;
-use crate::metrics::MetricState;
 
 impl<const Dim: usize> System<Dim> {
     /// Determines whether thermalisation of the system has finished.
@@ -47,25 +47,32 @@ impl<const Dim: usize> System<Dim> {
             "Step size should not be adjusted after the system has thermalised"
         );
 
-        let acceptance_ratio = self.data.stats.accepted_moves() as FType / self.data.stats.total_moves() as FType;
+        let acceptance_ratio =
+            self.data.stats.accepted_moves() as FType / self.data.stats.total_moves() as FType;
 
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.data.acceptance_desc.desired_range.start {
             let correction = 1.0 - self.data.acceptance_desc.correction_size;
-            let size = self
-                .data
-                .current_step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
+            let size =
+                self.data
+                    .current_step_size
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
 
-            tracing::debug!("Step size corrected downwards to {:.2}", size.unwrap() * correction);
+            tracing::debug!(
+                "Step size corrected downwards to {:.2}",
+                size.unwrap() * correction
+            );
         } else if acceptance_ratio > self.data.acceptance_desc.desired_range.end {
             let correction = 1.0 + self.data.acceptance_desc.correction_size;
-            let size = self
-                .data
-                .current_step_size
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
+            let size =
+                self.data
+                    .current_step_size
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |f| Some(f * correction));
 
-            tracing::debug!("Step size corrected upwards to {:.2}", size.unwrap() * correction);
+            tracing::debug!(
+                "Step size corrected upwards to {:.2}",
+                size.unwrap() * correction
+            );
         }
     }
 }
@@ -91,7 +98,7 @@ pub enum LatticeIterMethod {
     /// For larger lattice sizes (e.g. 40 x 20^3 or bigger) this method is much faster than
     /// [`Sequential`](Self::Sequential). Despite this, the sequential method should be used
     /// for smaller lattices due to the initial overhead of the parallel iterator.
-    Parallel
+    Parallel,
 }
 
 /// Describes settings dedicated to performance.
@@ -100,13 +107,13 @@ pub struct PerformanceDesc {
     /// The iteration method to use for lattice data.
     ///
     /// Default: [`Parallel`](LatticeIterMethod::Parallel).
-    pub lattice_iter: LatticeIterMethod
+    pub lattice_iter: LatticeIterMethod,
 }
 
 impl Default for PerformanceDesc {
     fn default() -> Self {
         Self {
-            lattice_iter: LatticeIterMethod::Parallel
+            lattice_iter: LatticeIterMethod::Parallel,
         }
     }
 }
@@ -250,7 +257,7 @@ pub struct BurnInDesc {
     /// the every 100 sweeps 5 times in a row.
     ///
     /// Default value: `5`.
-    pub consecutive_passes: usize
+    pub consecutive_passes: usize,
 }
 
 impl Default for BurnInDesc {
@@ -258,7 +265,7 @@ impl Default for BurnInDesc {
         Self {
             block_size: 100,
             required_ratio: 0.1,
-            consecutive_passes: 5
+            consecutive_passes: 5,
         }
     }
 }
@@ -362,7 +369,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
             param_desc: ParamDesc::default(),
             acceptance_desc: AcceptanceDesc::default(),
             burn_in_desc: BurnInDesc::default(),
-            performance_desc: PerformanceDesc::default()
+            performance_desc: PerformanceDesc::default(),
         }
     }
 
@@ -441,7 +448,9 @@ impl<const Dim: usize> SystemBuilder<Dim> {
 
         let lattice = match self.lattice_desc {
             LatticeDesc::Create(desc) => Lattice::new(desc, self.performance_desc.lattice_iter),
-            LatticeDesc::Load(snapshot) => Lattice::from_snapshot(snapshot, self.performance_desc.lattice_iter)?,
+            LatticeDesc::Load(snapshot) => {
+                Lattice::from_snapshot(snapshot, self.performance_desc.lattice_iter)?
+            }
         };
 
         let snapshot_state = self
@@ -465,9 +474,13 @@ impl<const Dim: usize> SystemBuilder<Dim> {
                 chunk_size.extend_from_slice(&desc.chunk_size);
 
                 shape.push(Extent::new(1, None));
-                shape.extend(lattice.dimensions().iter().copied().map(|d| {
-                    Extent::new(d, Some(d))
-                }));
+                shape.extend(
+                    lattice
+                        .dimensions()
+                        .iter()
+                        .copied()
+                        .map(|d| Extent::new(d, Some(d))),
+                );
 
                 let shape_size = Extents::Simple(SimpleExtents::from(shape));
 
@@ -503,7 +516,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
             correlation_slices: Vec::new(),
             measurement_interval: 50,
             stats: SystemStats::default(),
-            successful_therm_checks: 0
+            successful_therm_checks: 0,
         };
 
         let mut sim = System {
@@ -518,7 +531,9 @@ impl<const Dim: usize> SystemBuilder<Dim> {
         sim.data.stats.current_action = first_action;
         sim.data.stats.action_history.push(first_action);
 
-        sim.metrics.sweep_size.inc_by(sim.data.lattice.sweep_size() as u64);
+        sim.metrics
+            .sweep_size
+            .inc_by(sim.data.lattice.sweep_size() as u64);
 
         tracing::info!("System initialised");
 

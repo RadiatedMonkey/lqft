@@ -1,6 +1,6 @@
-use std::net::SocketAddr;
 use crate::sim::System;
 use crate::util::FType;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -235,9 +235,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //     Ok(())
 // }
 
-use prometheus_exporter::prometheus as ps;
 use crate::all_public_in;
 use crate::observable_impl::{MeanValue, Variance};
+use prometheus_exporter::prometheus as ps;
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     let inc = new_value - ctr.get();
@@ -285,7 +285,8 @@ impl MetricState {
         let progress = ps::register_gauge!("progress", "Progress")?;
         let step_size = ps::register_gauge!("step_size", "Step Size")?;
         let action_density = ps::register_gauge!("action_density", "Action density")?;
-        let performed_measurements = ps::register_int_counter!("performed_measurements", "Performed Measurements")?;
+        let performed_measurements =
+            ps::register_int_counter!("performed_measurements", "Performed Measurements")?;
         let sweep_time = ps::register_gauge!("sweep_time", "Sweep Time")?;
         let stats_time = ps::register_gauge!("stats_time", "Stats Time")?;
         let therm_ratio = ps::register_gauge!("therm_ratio", "Thermalisation Ratio")?;
@@ -323,14 +324,19 @@ impl MetricState {
             sweep_time,
             accept_ratio,
             therm_ratio,
-            mean, meansq, var,
+            mean,
+            meansq,
+            var,
             stats_time,
             completed_sweeps,
             thermalised_at,
-            cpu, mem, sys: sysinfo::System::new_all(),
-            pid_ctr, pid,
+            cpu,
+            mem,
+            sys: sysinfo::System::new_all(),
+            pid_ctr,
+            pid,
             sweep_size,
-            runtime
+            runtime,
         })
     }
 }
@@ -339,13 +345,21 @@ impl<const Dim: usize> System<Dim> {
     pub fn push_metrics(&mut self) {
         let sweep_size = self.lattice().sweep_size();
 
-        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v as f64));
-        self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v as f64));
+        self.measured::<MeanValue>()
+            .inspect(|&v| self.metrics.mean.set(v as f64));
+        self.measured::<Variance>()
+            .inspect(|&v| self.metrics.var.set(v as f64));
 
         let metrics = &mut self.metrics;
 
-        set_int_to(&metrics.total_moves, self.data.stats.total_moves.load(Ordering::SeqCst));
-        set_int_to(&metrics.accepted_moves, self.data.stats.accepted_moves.load(Ordering::SeqCst));
+        set_int_to(
+            &metrics.total_moves,
+            self.data.stats.total_moves.load(Ordering::SeqCst),
+        );
+        set_int_to(
+            &metrics.accepted_moves,
+            self.data.stats.accepted_moves.load(Ordering::SeqCst),
+        );
 
         let accept_ratio = *self.data.stats.accept_ratio_history.last().unwrap();
         metrics.accept_ratio.set(accept_ratio as f64);
@@ -353,10 +367,17 @@ impl<const Dim: usize> System<Dim> {
         let progress = self.data.stats.current_sweep as f64 / self.data.stats.desired_sweeps as f64;
         metrics.progress.set(progress);
 
-        metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed) as f64);
-        metrics.action_density.set(self.data.stats.current_action as f64 / sweep_size as f64);
+        metrics
+            .step_size
+            .set(self.data.current_step_size.load(Ordering::Relaxed) as f64);
+        metrics
+            .action_density
+            .set(self.data.stats.current_action as f64 / sweep_size as f64);
 
-        set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
+        set_int_to(
+            &metrics.performed_measurements,
+            self.data.stats.performed_measurements as u64,
+        );
 
         let sweep_time = *self.data.stats.sweep_time_history.last().unwrap();
         metrics.sweep_time.set(sweep_time as f64);
@@ -364,12 +385,23 @@ impl<const Dim: usize> System<Dim> {
         let stats_time = *self.data.stats.stats_time_history.last().unwrap();
         metrics.stats_time.set(stats_time as f64);
 
-        let therm_ratio = self.data.stats.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
+        let therm_ratio = self
+            .data
+            .stats
+            .thermalisation_ratio_history
+            .last()
+            .copied()
+            .unwrap_or(0.0);
         metrics.therm_ratio.set(therm_ratio as f64);
 
-        set_int_to(&metrics.completed_sweeps, self.data.stats.current_sweep as u64 + 1);
+        set_int_to(
+            &metrics.completed_sweeps,
+            self.data.stats.current_sweep as u64 + 1,
+        );
 
-        if metrics.thermalised_at.get() == 0 && let Some(sweep) = self.data.stats.thermalised_at {
+        if metrics.thermalised_at.get() == 0
+            && let Some(sweep) = self.data.stats.thermalised_at
+        {
             metrics.thermalised_at.inc_by(sweep as u64);
         }
 

@@ -1,23 +1,23 @@
 use crate::lattice::Lattice;
+use crate::metrics::MetricState;
+use crate::observable::{Observable, ObservableRegistry};
 use crate::setup::{AcceptanceDesc, BurnInDesc};
-use crate::snapshot::{SnapshotState};
+use crate::snapshot::SnapshotState;
 use crate::stats::SystemStats;
+use crate::util::{AtomicFType, FType, SIMD_LANES, SimdFType, SimdUType};
 use hdf5_metno::H5Type;
+use rand::RngExt;
+use rand_xoshiro::Xoshiro256PlusPlus;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
-use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
 use std::simd::num::SimdFloat;
-use std::simd::{Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
+use std::simd::{Select, StdFloat};
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool};
 use std::time::Instant;
-use rand::RngExt;
-use crate::observable::{Observable, ObservableRegistry};
-use crate::metrics::MetricState;
-use crate::util::{AtomicFType, FType, SIMD_LANES, SimdFType, SimdUType};
 
 const CTR: SimdUType = SimdUType::from_array([0, 1, 2, 3]);
 const TWO: SimdUType = SimdUType::splat(2);
@@ -55,7 +55,7 @@ pub struct SystemData<const LatticeDim: usize> {
     pub measurement_interval: usize,
     pub current_step_size: AtomicFType,
     pub stats: SystemStats,
-    pub successful_therm_checks: usize
+    pub successful_therm_checks: usize,
 }
 
 pub struct System<const LatticeDim: usize> {
@@ -63,7 +63,7 @@ pub struct System<const LatticeDim: usize> {
     pub metrics: MetricState,
     pub snapshot_state: Option<SnapshotState<LatticeDim>>,
     pub observables: ObservableRegistry<LatticeDim>,
-    pub data: SystemData<LatticeDim>
+    pub data: SystemData<LatticeDim>,
 }
 
 // TODO: This can probably be optimised. The compiler is not unrolling the loop which costs quite a bit of time.
@@ -90,7 +90,7 @@ fn to_index<const Dim: usize>(c: [SimdUType; Dim], dims: [usize; Dim]) -> SimdUT
     let mut mult = SimdUType::splat(1);
     let mut idx = SimdUType::splat(0);
     for d in (0..Dim).rev() {
-        idx += c[d] * mult;            
+        idx += c[d] * mult;
         mult *= SimdUType::splat(dims[d]);
     }
 
@@ -98,7 +98,11 @@ fn to_index<const Dim: usize>(c: [SimdUType; Dim], dims: [usize; Dim]) -> SimdUT
 }
 
 #[inline(always)]
-fn find_fneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], dir: usize) -> SimdUType {
+fn find_fneighbors<const Dim: usize>(
+    site_idx: SimdUType,
+    dims: [usize; Dim],
+    dir: usize,
+) -> SimdUType {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
@@ -111,7 +115,11 @@ fn find_fneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], di
 }
 
 #[inline(always)]
-fn find_bneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], dir: usize) -> SimdUType {
+fn find_bneighbors<const Dim: usize>(
+    site_idx: SimdUType,
+    dims: [usize; Dim],
+    dir: usize,
+) -> SimdUType {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
@@ -123,13 +131,19 @@ fn find_bneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], di
     to_index(new, dims)
 }
 
-
 impl<const Dim: usize> System<Dim> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
-        rng: &mut R, idx: usize, chunk: &mut [FType], neigh_sites: &[FType], dimensions: [usize; Dim],
-        spacing: FType, step_size: FType, mass_squared: FType, coupling: FType
+        rng: &mut R,
+        idx: usize,
+        chunk: &mut [FType],
+        neigh_sites: &[FType],
+        dimensions: [usize; Dim],
+        spacing: FType,
+        step_size: FType,
+        mass_squared: FType,
+        coupling: FType,
     ) -> u64 {
         let curr_vals = SimdFType::from_slice(chunk);
 
@@ -234,7 +248,8 @@ impl<const Dim: usize> System<Dim> {
         }
 
         self.data.stats.reserve_capacity(total_sweeps);
-        self.data.correlation_slices
+        self.data
+            .correlation_slices
             .resize(self.data.lattice.dimensions()[0], 0.0);
 
         tracing::info!("Running {total_sweeps} sweeps...");
@@ -263,43 +278,59 @@ impl<const Dim: usize> System<Dim> {
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
 
-            red_sites.par_chunks_mut(SIMD_LANES).enumerate().for_each_init(
-                || {
-                    let mut seed_rng = rand::rng();
-                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-                },
-                |rng, (j, chunk)| {
-                    let new_accepted_moves = Self::flip_site_chunk(
-                        rng, j, chunk, black_sites,
-                        dimensions,
-                        spacing, step_size,
-                        mass_squared, coupling
-                    );
+            red_sites
+                .par_chunks_mut(SIMD_LANES)
+                .enumerate()
+                .for_each_init(
+                    || {
+                        let mut seed_rng = rand::rng();
+                        Xoshiro256PlusPlus::from_rng(&mut seed_rng)
+                    },
+                    |rng, (j, chunk)| {
+                        let new_accepted_moves = Self::flip_site_chunk(
+                            rng,
+                            j,
+                            chunk,
+                            black_sites,
+                            dimensions,
+                            spacing,
+                            step_size,
+                            mass_squared,
+                            coupling,
+                        );
 
-                    accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
-                    total_moves.fetch_add(8, Ordering::SeqCst);
-                }
-            );
+                        accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
+                        total_moves.fetch_add(8, Ordering::SeqCst);
+                    },
+                );
 
             let red_sites = &self.data.lattice.red_sites;
             let black_sites = &mut self.data.lattice.black_sites;
-            black_sites.par_chunks_mut(SIMD_LANES).enumerate().for_each_init(
-                || {
-                    let mut seed_rng = rand::rng();
-                    Xoshiro256PlusPlus::from_rng(&mut seed_rng)
-                },
-                |rng, (j, chunk)| {
-                    let new_accepted_moves = Self::flip_site_chunk(
-                        rng, j, chunk, red_sites,
-                        dimensions,
-                        spacing, step_size,
-                        mass_squared, coupling
-                    );
+            black_sites
+                .par_chunks_mut(SIMD_LANES)
+                .enumerate()
+                .for_each_init(
+                    || {
+                        let mut seed_rng = rand::rng();
+                        Xoshiro256PlusPlus::from_rng(&mut seed_rng)
+                    },
+                    |rng, (j, chunk)| {
+                        let new_accepted_moves = Self::flip_site_chunk(
+                            rng,
+                            j,
+                            chunk,
+                            red_sites,
+                            dimensions,
+                            spacing,
+                            step_size,
+                            mass_squared,
+                            coupling,
+                        );
 
-                    accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
-                    total_moves.fetch_add(8, Ordering::SeqCst);
-                }
-            );
+                        accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
+                        total_moves.fetch_add(8, Ordering::SeqCst);
+                    },
+                );
 
             self.simulating.store(false, Ordering::SeqCst);
 
@@ -318,17 +349,24 @@ impl<const Dim: usize> System<Dim> {
                 self.data.stats.thermalisation_ratio_history.push(th_ratio);
 
                 // Perform one check
-                if i % self.data.burn_in_desc.block_size == 0 && self.data.stats.thermalised_at.is_none() {
+                if i % self.data.burn_in_desc.block_size == 0
+                    && self.data.stats.thermalised_at.is_none()
+                {
                     if thermalised {
                         self.data.successful_therm_checks += 1;
                     } else {
                         self.data.successful_therm_checks = 0;
                     }
 
-                    if self.data.successful_therm_checks == self.data.burn_in_desc.consecutive_passes {
+                    if self.data.successful_therm_checks
+                        == self.data.burn_in_desc.consecutive_passes
+                    {
                         // System has thermalised
                         self.data.stats.thermalised_at = Some(i);
-                        tracing::info!("System has thermalised at sweep {i} after {} consecutive checks", self.data.burn_in_desc.consecutive_passes);
+                        tracing::info!(
+                            "System has thermalised at sweep {i} after {} consecutive checks",
+                            self.data.burn_in_desc.consecutive_passes
+                        );
                     }
                 }
             }
@@ -393,7 +431,9 @@ impl<const Dim: usize> System<Dim> {
 
         let black_sites = &self.lattice().black_sites;
         let action_red = self
-            .data.lattice.red_sites
+            .data
+            .lattice
+            .red_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
@@ -426,15 +466,14 @@ impl<const Dim: usize> System<Dim> {
 
                 a4 * (kinetic + mass + inter)
             })
-            .reduce(
-                || SimdFType::splat(0.0),
-                |a, b| a + b
-            )
+            .reduce(|| SimdFType::splat(0.0), |a, b| a + b)
             .reduce_sum();
 
         let red_sites = &self.lattice().red_sites;
         let action_black = self
-            .data.lattice.black_sites
+            .data
+            .lattice
+            .black_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
@@ -467,10 +506,7 @@ impl<const Dim: usize> System<Dim> {
 
                 a4 * (kinetic + mass + inter)
             })
-            .reduce(
-                || SimdFType::splat(0.0),
-                |a, b| a + b
-            )
+            .reduce(|| SimdFType::splat(0.0), |a, b| a + b)
             .reduce_sum();
 
         action_red + action_black

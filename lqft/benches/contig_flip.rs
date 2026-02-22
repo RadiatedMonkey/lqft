@@ -1,14 +1,14 @@
 #![feature(portable_simd)]
 
-use std::cell::UnsafeCell;
-use std::hint::black_box;
-use std::simd::{Select, Simd, StdFloat, ToBytes, f32x4, f64x4};
-use std::simd::cmp::SimdPartialOrd;
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use rand::RngExt;
 use rand::rngs::Xoshiro256PlusPlus;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
 use rayon::prelude::*;
+use std::cell::UnsafeCell;
+use std::hint::black_box;
+use std::simd::cmp::SimdPartialOrd;
+use std::simd::{Select, Simd, StdFloat, ToBytes, f32x4, f64x4};
 
 type FType = f32;
 type SimdFType = f32x4;
@@ -21,7 +21,7 @@ unsafe impl Sync for SyncWrapper {}
 struct GlobalLattice {
     sites: SyncWrapper,
     red_indices: Vec<usize>,
-    black_indices: Vec<usize>
+    black_indices: Vec<usize>,
 }
 
 struct ColoredLattice {
@@ -32,9 +32,7 @@ struct ColoredLattice {
 fn old_flip(lattice: &mut GlobalLattice) {
     let sites = &lattice.sites;
     lattice.red_indices.par_iter().for_each_init(
-        || {
-            rand::rng()
-        },
+        || rand::rng(),
         |rng, &index| {
             let val = unsafe { *sites.0[index].get() };
             let new_val = rng.random_range(val - 0.5..val + 0.5);
@@ -45,12 +43,11 @@ fn old_flip(lattice: &mut GlobalLattice) {
             if realised > prob {
                 unsafe { *sites.0[index].get() = new_val }
             }
-        });
+        },
+    );
 
     lattice.black_indices.par_iter().for_each_init(
-        || {
-            rand::rng()
-        },
+        || rand::rng(),
         |rng, &index| {
             let val = unsafe { *sites.0[index].get() };
             let new_val = rng.random_range(val - 0.5..val + 0.5);
@@ -61,7 +58,8 @@ fn old_flip(lattice: &mut GlobalLattice) {
             if realised > prob {
                 unsafe { *sites.0[index].get() = new_val }
             }
-        });
+        },
+    );
 }
 
 fn reg_flip(lattice: &mut GlobalLattice) {
@@ -72,16 +70,17 @@ fn reg_flip(lattice: &mut GlobalLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, &index| {
-        let val = unsafe { *sites.0[index].get() };
-        let new_val = rng.random_range(val - 0.5..val + 0.5);
+            let val = unsafe { *sites.0[index].get() };
+            let new_val = rng.random_range(val - 0.5..val + 0.5);
 
-        let prob = (val - new_val).exp();
-        let realised = rng.random_range(0.0..1.0);
+            let prob = (val - new_val).exp();
+            let realised = rng.random_range(0.0..1.0);
 
-        if realised > prob {
-            unsafe { *sites.0[index].get() = new_val }
-        }
-    });
+            if realised > prob {
+                unsafe { *sites.0[index].get() = new_val }
+            }
+        },
+    );
 
     lattice.black_indices.par_iter().for_each_init(
         || {
@@ -89,16 +88,17 @@ fn reg_flip(lattice: &mut GlobalLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, &index| {
-        let val = unsafe { *sites.0[index].get() };
-        let new_val = rng.random_range(val - 0.5..val + 0.5);
+            let val = unsafe { *sites.0[index].get() };
+            let new_val = rng.random_range(val - 0.5..val + 0.5);
 
-        let prob = (val - new_val).exp();
-        let realised = rng.random_range(0.0..1.0);
+            let prob = (val - new_val).exp();
+            let realised = rng.random_range(0.0..1.0);
 
-        if realised > prob {
-            unsafe { *sites.0[index].get() = new_val }
-        }
-    });
+            if realised > prob {
+                unsafe { *sites.0[index].get() = new_val }
+            }
+        },
+    );
 }
 
 fn contig_flip(lattice: &mut ColoredLattice) {
@@ -109,15 +109,16 @@ fn contig_flip(lattice: &mut ColoredLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, site| {
-        let curr = *site;
-        let new_val = rng.random_range(curr - 0.5..curr + 0.5);
+            let curr = *site;
+            let new_val = rng.random_range(curr - 0.5..curr + 0.5);
 
-        let prob = (curr - new_val).exp();
-        let realised = rng.random_range(0.0..1.0);
+            let prob = (curr - new_val).exp();
+            let realised = rng.random_range(0.0..1.0);
 
-        let keep_new = (realised > prob) as i64 as FType;
-        *site = new_val * keep_new + curr * (1.0 - keep_new);
-    });
+            let keep_new = (realised > prob) as i64 as FType;
+            *site = new_val * keep_new + curr * (1.0 - keep_new);
+        },
+    );
 
     let black = &mut lattice.black;
     black.par_iter_mut().for_each_init(
@@ -138,7 +139,8 @@ fn contig_flip(lattice: &mut ColoredLattice) {
             // if realised > prob {
             //     *site = new_val;
             // }
-        });
+        },
+    );
 }
 
 fn simd_flip(lattice: &mut ColoredLattice) {
@@ -168,7 +170,7 @@ fn simd_flip(lattice: &mut ColoredLattice) {
             let result = mask.select(new_val, curr);
 
             result.copy_to_slice(chunk);
-        }
+        },
     );
 
     let black = &mut lattice.black;
@@ -197,7 +199,7 @@ fn simd_flip(lattice: &mut ColoredLattice) {
             let result = mask.select(new_val, curr);
 
             result.copy_to_slice(chunk);
-        }
+        },
     );
 }
 
@@ -226,7 +228,7 @@ fn simd_flip2(lattice: &mut ColoredLattice) {
             let result = mask.select(new_val, curr);
 
             result.copy_to_slice(chunk);
-        }
+        },
     );
 
     let black = &mut lattice.black;
@@ -253,7 +255,7 @@ fn simd_flip2(lattice: &mut ColoredLattice) {
             let result = mask.select(new_val, curr);
 
             result.copy_to_slice(chunk);
-        }
+        },
     );
 }
 
@@ -264,7 +266,9 @@ fn gen_random_vec(len: usize) -> Vec<FType> {
 
 fn gen_random_interior_vec(len: usize) -> Vec<UnsafeCell<FType>> {
     let mut rng = rand::rng();
-    (0..len).map(|_| UnsafeCell::new(rng.random_range(-1.0..1.0))).collect()
+    (0..len)
+        .map(|_| UnsafeCell::new(rng.random_range(-1.0..1.0)))
+        .collect()
 }
 
 const DIMS: [usize; 4] = [80, 40, 40, 40];
@@ -280,7 +284,7 @@ fn flip_benchmark(c: &mut Criterion) {
 
     let mut colored = ColoredLattice {
         red: gen_random_vec(TOTAL.div_ceil(2)),
-        black: gen_random_vec(TOTAL.div_ceil(2))
+        black: gen_random_vec(TOTAL.div_ceil(2)),
     };
 
     let mut red_indices = Vec::with_capacity(TOTAL.div_ceil(2));
@@ -303,14 +307,19 @@ fn flip_benchmark(c: &mut Criterion) {
 
     let mut global = GlobalLattice {
         sites: SyncWrapper(gen_random_interior_vec(TOTAL)),
-        red_indices, black_indices
+        red_indices,
+        black_indices,
     };
 
     group.bench_function("old_flip", |b| b.iter(|| old_flip(black_box(&mut global))));
     // group.bench_function("global_flip", |b| b.iter(|| reg_flip(&mut global)));
     // group.bench_function("contig_flip", |b| b.iter(|| contig_flip(&mut colored)));
-    group.bench_function("simd_flip", |b| b.iter(|| simd_flip(black_box(&mut colored))));
-    group.bench_function("simd_rand_flip", |b| b.iter(|| simd_flip2(black_box(&mut colored))));
+    group.bench_function("simd_flip", |b| {
+        b.iter(|| simd_flip(black_box(&mut colored)))
+    });
+    group.bench_function("simd_rand_flip", |b| {
+        b.iter(|| simd_flip2(black_box(&mut colored)))
+    });
 
     group.finish();
 }

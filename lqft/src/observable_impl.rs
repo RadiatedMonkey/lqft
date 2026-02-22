@@ -20,7 +20,7 @@ impl<const Dim: usize> Observable<Dim> for MeanValue {
 }
 
 pub struct MeanValueState {
-    data: Vec<FType>
+    data: Vec<FType>,
 }
 
 impl<const Dim: usize> ObservableState<Dim> for MeanValueState {
@@ -68,7 +68,7 @@ impl<const Dim: usize> Observable<Dim> for Variance {
 }
 
 pub struct VarianceState {
-    data: Vec<FType>
+    data: Vec<FType>,
 }
 
 impl<const Dim: usize> ObservableState<Dim> for VarianceState {
