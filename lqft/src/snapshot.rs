@@ -11,30 +11,27 @@ use std::time::Instant;
 /// A single snapshots fragment.
 ///
 /// This represents one sweep together with its statistics.
-pub struct SnapshotFragment {
-    pub(crate) lattice: Lattice,
+pub struct SnapshotFragment<const Dim: usize> {
+    pub(crate) lattice: Lattice<Dim>,
     pub(crate) stats: SweepStats,
 }
 
-pub struct SnapshotState {
+pub struct SnapshotState<const Dim: usize> {
     pub file: Option<hdf5::File>,
     pub dataset: Arc<hdf5::Dataset>,
-    pub desc: SnapshotDesc,
+    pub desc: SnapshotDesc<Dim>,
     pub thread: Option<JoinHandle<()>>,
-    pub tx: Option<mpsc::Sender<SnapshotFragment>>,
+    pub tx: Option<mpsc::Sender<SnapshotFragment<Dim>>>,
 }
 
-struct JobDesc {
+struct JobDesc<const Dim: usize> {
     dataset: Arc<hdf5::Dataset>,
-    rx: mpsc::Receiver<SnapshotFragment>,
-    st: usize,
-    sx: usize,
-    sy: usize,
-    sz: usize,
+    rx: mpsc::Receiver<SnapshotFragment<Dim>>,
+    dims: [usize; Dim]
 }
 
-impl SnapshotState {
-    pub fn send_fragment(&self, fragment: SnapshotFragment) -> anyhow::Result<()> {
+impl<const Dim: usize> SnapshotState<Dim> {
+    pub fn send_fragment(&self, fragment: SnapshotFragment<Dim>) -> anyhow::Result<()> {
         let tx = self
             .tx
             .as_ref()
@@ -44,7 +41,7 @@ impl SnapshotState {
         Ok(())
     }
 
-    fn sequential_job(desc: JobDesc) {
+    fn sequential_job(desc: JobDesc<Dim>) {
         // tracing::info!("Initialised sequential snapshot flush thread");
         //
         // let JobDesc {
@@ -87,7 +84,7 @@ impl SnapshotState {
         todo!();
     }
 
-    fn batch_job(desc: JobDesc, batch_size: usize) {
+    fn batch_job(desc: JobDesc<Dim>, batch_size: usize) {
         // tracing::info!("Initialised snapshot batch flush thread");
         //
         // let JobDesc {
@@ -137,7 +134,7 @@ impl SnapshotState {
     }
 
     /// Initialises the snapshots.
-    pub fn init(&mut self, [st, sx, sy, sz]: [usize; 4], sweeps: usize) -> anyhow::Result<()> {
+    pub fn init(&mut self, dims: [usize; Dim], sweeps: usize) -> anyhow::Result<()> {
         if self.thread.is_some() {
             anyhow::bail!("Another simulation is already running");
         }
@@ -146,19 +143,22 @@ impl SnapshotState {
             SnapshotType::Interval(interval) => sweeps / interval,
             SnapshotType::Checkpoint => 1,
         };
+        
+        // Theoretically I could use an array of length Dim + 1 but that opens a whole can of worms
+        // called `generic_const_exprs` that is currently very unstable. Using a vec is much easier and works
+        // without nightly features.
+        let mut new_size = Vec::with_capacity(Dim + 1);
+        new_size.push(snapshot_count);
+        new_size.extend_from_slice(&dims);
 
-        self.dataset.resize([snapshot_count, st, sx, sy, sz])?;
+        self.dataset.resize(&new_size)?;
 
         let (tx, rx) = mpsc::channel();
         self.tx = Some(tx);
 
         let job_desc = JobDesc {
             dataset: Arc::clone(&self.dataset),
-            rx,
-            st,
-            sx,
-            sy,
-            sz,
+            rx, dims
         };
 
         let method = self.desc.flush_method;
@@ -177,7 +177,7 @@ impl SnapshotState {
     }
 }
 
-impl Drop for SnapshotState {
+impl<const Dim: usize> Drop for SnapshotState<Dim> {
     fn drop(&mut self) {
         // Drop sender to signal to thread.
         let _ = self.tx.take();

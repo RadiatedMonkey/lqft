@@ -5,7 +5,7 @@ use crate::stats::SystemStats;
 use crate::{lattice::Lattice, sim::System};
 use anyhow::Context;
 use atomic_float::AtomicF64;
-use hdf5_metno as hdf5;
+use hdf5_metno::{self as hdf5, Extent, Extents, SimpleExtents};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
@@ -122,7 +122,7 @@ pub enum FlushMethod {
 
 /// Configures the lattice.
 #[derive(Debug, Clone)]
-pub struct LatticeCreateDesc {
+pub struct LatticeCreateDesc<const Dim: usize> {
     /// The initial state of the lattice.
     ///
     /// This sets the initial conditions of the system.
@@ -132,18 +132,18 @@ pub struct LatticeCreateDesc {
     /// The dimensions of the lattice.
     ///
     /// Default value: `[40, 20, 20, 20]`.
-    pub dimensions: [usize; 4],
+    pub dimensions: [usize; Dim],
     /// The lattice spacing.
     ///
     /// Default value: `1.0`.
     pub spacing: f64,
 }
 
-impl Default for LatticeCreateDesc {
+impl<const Dim: usize> Default for LatticeCreateDesc<Dim> {
     fn default() -> Self {
         Self {
             initial_state: InitialState::RandomRange(-0.5..0.5),
-            dimensions: [40, 20, 20, 20],
+            dimensions: [0; Dim],
             spacing: 1.0,
         }
     }
@@ -175,9 +175,9 @@ impl Default for LatticeLoadDesc {
 }
 
 #[derive(Debug, Clone)]
-pub enum LatticeDesc {
+pub enum LatticeDesc<const Dim: usize> {
     Load(LatticeLoadDesc),
-    Create(LatticeCreateDesc),
+    Create(LatticeCreateDesc<Dim>),
 }
 
 /// Controls how the system reaches the desired acceptance ratio.
@@ -283,7 +283,7 @@ pub enum SnapshotType {
 
 /// Configuration for the snapshot feature.
 #[derive(Debug, Clone)]
-pub struct SnapshotDesc {
+pub struct SnapshotDesc<const Dim: usize> {
     /// The HDF5 file to output snapshots into.
     ///
     /// This can be an already existing HDF5 file, in which case the content will be appended to the
@@ -303,19 +303,19 @@ pub struct SnapshotDesc {
     /// See [`HDF5 chunking`](https://support.hdfgroup.org/documentation/hdf5-docs/advanced_topics/chunking_in_hdf5.html) for more information.
     ///
     /// Default value: `[16, 16, 16, 16]`.
-    pub chunk_size: [usize; 4],
+    pub chunk_size: [usize; Dim],
     /// The method used to flush the snapshots to disk.
     ///
     /// Default value: `FlushMethod::Sequential`.
     pub flush_method: FlushMethod,
 }
 
-impl Default for SnapshotDesc {
+impl<const Dim: usize> Default for SnapshotDesc<Dim> {
     fn default() -> Self {
         Self {
             file: "snapshots/snapshot.h5".to_owned(),
             ty: SnapshotType::Checkpoint,
-            chunk_size: [16; 4],
+            chunk_size: [16; Dim],
             flush_method: FlushMethod::Sequential,
         }
     }
@@ -342,17 +342,17 @@ impl Default for ParamDesc {
 }
 
 /// Used to configure a lattice simulation.
-pub struct SystemBuilder {
+pub struct SystemBuilder<const LatticeDim: usize> {
     performance_desc: PerformanceDesc,
     observables: ObservableRegistry,
     param_desc: ParamDesc,
-    lattice_desc: LatticeDesc,
+    lattice_desc: LatticeDesc<LatticeDim>,
     acceptance_desc: AcceptanceDesc,
     burn_in_desc: BurnInDesc,
-    snapshot: Option<SnapshotDesc>,
+    snapshot: Option<SnapshotDesc<LatticeDim>>,
 }
 
-impl SystemBuilder {
+impl<const Dim: usize> SystemBuilder<Dim> {
     /// Creates a new system builder with default configuration.
     pub fn new() -> Self {
         Self {
@@ -371,7 +371,7 @@ impl SystemBuilder {
     /// Snapshots are disabled by default.
     ///
     /// See [`SnapshotDesc`] for more information.
-    pub fn enable_snapshot(mut self, desc: SnapshotDesc) -> Self {
+    pub fn enable_snapshot(mut self, desc: SnapshotDesc<Dim>) -> Self {
         self.snapshot = Some(desc);
         self
     }
@@ -408,7 +408,7 @@ impl SystemBuilder {
     /// Sets the lattice configuration.
     ///
     /// See [`LatticeDesc`] for more information.
-    pub fn with_lattice(mut self, desc: LatticeDesc) -> Self {
+    pub fn with_lattice(mut self, desc: LatticeDesc<Dim>) -> Self {
         self.lattice_desc = desc;
         self
     }
@@ -457,15 +457,25 @@ impl SystemBuilder {
                 };
 
                 let elapsed = UNIX_EPOCH.elapsed()?.as_secs();
-                let [st, sx, sy, sz] = lattice.dimensions();
 
-                let [ct, cx, cy, cz] = desc.chunk_size;
+                let mut chunk_size = Vec::with_capacity(Dim + 1);
+                let mut shape = Vec::with_capacity(Dim + 1);
+
+                chunk_size.push(1);
+                chunk_size.extend_from_slice(&desc.chunk_size);
+
+                shape.push(Extent::new(1, None));
+                shape.extend(lattice.dimensions().iter().copied().map(|d| {
+                    Extent::new(d, Some(d))
+                }));
+
+                let shape_size = Extents::Simple(SimpleExtents::from(shape));
 
                 let set_name = format!("{elapsed}");
                 let set = snapshot_group
                     .new_dataset::<f64>()
-                    .chunk([1, ct, cx, cy, cz])
-                    .shape((1.., st, sx, sy, sz))
+                    .chunk(&chunk_size)
+                    .shape(&shape_size)
                     .shuffle()
                     .fletcher32()
                     .deflate(5)
@@ -473,7 +483,7 @@ impl SystemBuilder {
 
                 tracing::debug!("Dataset {set_name} created");
 
-                Ok::<SnapshotState, anyhow::Error>(SnapshotState {
+                Ok::<SnapshotState<Dim>, anyhow::Error>(SnapshotState {
                     file: Some(snapshot),
                     dataset: Arc::new(set),
                     desc,
@@ -516,7 +526,7 @@ impl SystemBuilder {
     }
 }
 
-impl Default for SystemBuilder {
+impl<const Dim: usize> Default for SystemBuilder<Dim> {
     fn default() -> Self {
         Self::new()
     }
