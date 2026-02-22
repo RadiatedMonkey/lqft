@@ -103,27 +103,17 @@ fn to_index(c: [SimdUType; 4], dims: [usize; 4]) -> SimdUType {
     (c[0] * sx * sy * sz) + (c[1] * sy * sz) + (c[2] * sz) + c[3]
 }
 
-// #[inline(always)]
-// fn find_fneighbors(site_idx: SimdUType, dims: [usize; 4], dir: usize) -> SimdUType {
-//     let coords = to_coord(site_idx, dims);
-//     let mut new = coords;
-//
-//     const ONE: SimdUType = SimdUType::splat(1);
-//     let dim = SimdUType::splat(dims[dir]);
-//
-//     new[dir] = (coords[dir] + ONE) % dim;
-//
-//     to_index(new, dims)
-// }
-
 #[inline(always)]
-fn find_fneighbors_red(site_idx: SimdUType, adjacency: &[Vec<usize>; 8], dir: usize) -> SimdUType {
-    SimdUType::gather_or_default(&adjacency[dir], site_idx)
-}
+fn find_fneighbors(site_idx: SimdUType, dims: [usize; 4], dir: usize) -> SimdUType {
+    let coords = to_coord(site_idx, dims);
+    let mut new = coords;
 
-#[inline(always)]
-fn find_bneighbors_red(site_idx: SimdUType, adjacency: &[Vec<usize>; 8], dir: usize) -> SimdUType {
-    SimdUType::gather_or_default(&adjacency[4 + dir], site_idx)
+    const ONE: SimdUType = SimdUType::splat(1);
+    let dim = SimdUType::splat(dims[dir]);
+
+    new[dir] = (coords[dir] + ONE) % dim;
+
+    to_index(new, dims)
 }
 
 #[inline(always)]
@@ -143,14 +133,14 @@ pub enum Red {}
 pub enum Black {}
 
 pub trait Color {
-    fn is_red() -> bool;
+    const IS_RED: bool;
 }
 
 impl Color for Red {
-    fn is_red() -> bool { true }
+    const IS_RED: bool = true;
 }
 impl Color for Black {
-    fn is_red() -> bool { false }
+    const IS_RED: bool = false;
 }
 
 impl System {
@@ -158,7 +148,7 @@ impl System {
     #[inline(always)]
     fn flip_site_chunk<C: Color, R: Rng>(
         rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
-        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64, adjacency: &[Vec<usize>; 8]
+        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
     ) -> u64 {
         let curr_vals = SimdFType::from_slice(chunk);
 
@@ -184,9 +174,8 @@ impl System {
             let div_a = SimdFType::splat(1.0) / a;
 
             for i in 0..4 {
-                // FIXME: request actual neighbour indices
-                let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
-                let bneigh_idxs = find_bneighbors_red(site_idxs, adjacency, i);
+                let fneigh_idxs = find_fneighbors(site_idxs, dimensions, i);
+                let bneigh_idxs = find_bneighbors(site_idxs, dimensions, i);
 
                 let fneigh_vals = SimdFType::gather_or_default(neigh_sites, fneigh_idxs / TWO);
                 let bneigh_vals = SimdFType::gather_or_default(neigh_sites, bneigh_idxs / TWO);
@@ -294,9 +283,6 @@ impl System {
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
 
-            let red_adjacency = &self.data.lattice.red_adjacency;
-            let black_adjacency = &self.data.lattice.black_adjacency;
-
             red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
@@ -307,7 +293,7 @@ impl System {
                         rng, j, chunk, black_sites,
                         dimensions,
                         spacing, step_size,
-                        mass_squared, coupling, red_adjacency
+                        mass_squared, coupling
                     );
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
@@ -327,7 +313,7 @@ impl System {
                         rng, j, chunk, red_sites,
                         dimensions,
                         spacing, step_size,
-                        mass_squared, coupling, black_adjacency
+                        mass_squared, coupling
                     );
 
                     accepted_moves.fetch_add(new_accepted_moves, Ordering::SeqCst);
@@ -426,7 +412,6 @@ impl System {
         // Compute action for red sites
 
         let black_sites = &self.lattice().black_sites;
-        let adjacency = &self.lattice().red_adjacency;
         let action_red = self
             .data.lattice.red_sites
             .par_chunks(8)
@@ -437,7 +422,7 @@ impl System {
 
                 let mut der_sum = SimdFType::splat(0.0);
                 for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
                     let fneigh_vals = SimdFType::gather_or_default(black_sites, fneigh_idxs / TWO);
@@ -468,7 +453,6 @@ impl System {
             .reduce_sum();
 
         let red_sites = &self.lattice().red_sites;
-        let adjacency = &self.lattice().black_adjacency;
         let action_black = self
             .data.lattice.black_sites
             .par_chunks(8)
@@ -479,7 +463,7 @@ impl System {
 
                 let mut der_sum = SimdFType::splat(0.0);
                 for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors_red(site_idxs, adjacency, i);
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
                     let fneigh_vals = SimdFType::gather_or_default(red_sites, fneigh_idxs / TWO);

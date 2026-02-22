@@ -11,6 +11,7 @@ use std::ops::Range;
 use std::str::FromStr;
 
 use rayon::prelude::*;
+use crate::sim::Color;
 
 /// 2 adjacent indices in each dimension.
 type AdjacentIndices = Vec<[usize; 8]>;
@@ -20,8 +21,6 @@ pub struct Lattice {
     iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
-    pub red_adjacency: [Vec<usize>; 8],
-    pub black_adjacency: [Vec<usize>; 8],
 
     pub(crate) red_sites: Vec<f64>,
     pub(crate) black_sites: Vec<f64>
@@ -38,6 +37,35 @@ impl Lattice {
                 Lattice::random(desc.dimensions, desc.spacing, iter_method, range)
             }
         }
+    }
+
+    fn sync_dimension(&mut self, dim: usize, cursor: &mut [usize; 4]) {
+        for y in 1..=self.dimensions[2] {
+            for z in 1..=self.dimensions[3] {
+                for t in 1..=self.dimensions[0] {
+                    // Only sync the faces
+                    let src_front = self.to_index([t, 1, y, z]);
+                    let ghost_back = self.to_index([t, self.dimensions[0] + 1, y, z]);
+
+                    let src_back = self.to_index([t, self.dimensions[0], y, z]);
+                    let ghost_front = self.to_index([t, 0, y, z]);
+                }
+            }
+        }
+    }
+
+    /// Synchronises the ghost padding
+    pub fn sync_ghost_cells(&mut self) {
+        let d = self.dimensions;
+        for i in 0..4 {
+            let mut cursor = [1; 4];
+            self.sync_dimension(i, &mut cursor);
+        }
+    }
+
+    /// Computes the size of the ghost padding
+    fn ghost_padding_size([st, sx, sy, sz]: [usize; 4]) -> usize {
+        (st + 2) * (sx + 2) * (sy + 2) * (sz + 2) - st * sx * sy * sz
     }
 
     pub fn from_snapshot(desc: LatticeLoadDesc, iter_method: LatticeIterMethod) -> anyhow::Result<Self> {
@@ -192,34 +220,6 @@ impl Lattice {
         (red, black)
     }
 
-    /// Generates an adjacency table for the specified lattice.
-    fn generate_adjacency(&mut self) {
-        let count = self.sweep_size().div_ceil(2);
-        let mut red_table = std::array::from_fn(|_| Vec::with_capacity(count));
-        let mut black_table = std::array::from_fn(|_| Vec::with_capacity(count));
-
-        for i in 0..4 {
-            for j in 0..self.sweep_size() {
-                let fneigh = self.get_forward_neighbor(j, i);
-                let fneigh_idx = self.to_index(fneigh);
-                let bneigh = self.get_backward_neighbor(j, i);
-                let bneigh_idx = self.to_index(bneigh);
-
-                let coord = self.from_index(j);
-                if self.is_red(coord) {
-                    red_table[i].push(fneigh_idx);
-                    red_table[4 + i].push(bneigh_idx);
-                } else {
-                    black_table[i].push(fneigh_idx);
-                    black_table[4 + i].push(bneigh_idx);
-                }
-            }
-        }
-
-        self.red_adjacency = red_table;
-        self.black_adjacency = black_table;
-    }
-
     pub fn spacing(&self) -> f64 {
         self.spacing
     }
@@ -326,18 +326,17 @@ impl Lattice {
 
     /// Fills the data with a fixed value.
     pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
+        let ghost_padding = Self::ghost_padding_size(dimensions);
+        let count = (dimensions.iter().product::<usize>() + ghost_padding).div_ceil(2);
         let red_sites = vec![fill_value; count];
         let black_sites = vec![fill_value; count];
 
-        let mut lattice = Self {
+        let lattice = Self {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions,
-            red_adjacency: Default::default(), black_adjacency: Default::default()
+            dimensions
         };
-        lattice.generate_adjacency();
 
         lattice
     }
@@ -353,7 +352,8 @@ impl Lattice {
         let [t, x, y, z] = dimensions;
         tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
 
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
+        let ghost_padding = Self::ghost_padding_size(dimensions);
+        let count = dimensions.iter().product::<usize>().div_ceil(2) + ghost_padding;
         let mut rng = rand::rng();
 
         // Seems like I need to clone `range` because the map function can only capture it once.
@@ -365,16 +365,12 @@ impl Lattice {
             .map(|_| rng.random_range(range.clone()))
             .collect::<Vec<_>>();
 
-        let mut lattice = Self {
+        Self {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions,
-            red_adjacency: Default::default(), black_adjacency: Default::default()
-        };
-        lattice.generate_adjacency();
-
-        lattice
+            dimensions
+        }
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
@@ -466,6 +462,8 @@ impl Lattice {
 
 #[cfg(test)]
 mod tests {
+    use std::simd::usizex4;
+    // use crate::sim::{find_bneighbors_red, find_fneighbors_red};
     use super::*;
 
     /// Test whether coordinates are mapped to indices into the vector storage correctly.
@@ -485,6 +483,26 @@ mod tests {
             );
         }
     }
+
+    // #[test]
+    // fn lattice_neighbor_test() {
+    //     let dimensions = [2, 1, 2, 2];
+    //     let lattice = Lattice::zeroed(dimensions, 1.0, LatticeIterMethod::Sequential);
+    //
+    //     for i in 0..dimensions.iter().product() {
+    //         let site = usizex4::splat(i);
+    //         let coords = lattice.from_index(i);
+    //         println!("coord: {coords:?}");
+    //
+    //         todo!();
+    //
+    //         // let adjacency = if lattice.is_red(coords) {
+    //         //     &lattice.black_adjacency
+    //         // } else {
+    //         //     &lattice.red_adjacency
+    //         // };
+    //     }
+    // }
 
     /// Test whether exceeding boundaries correctly wraps back to the other side of the lattice.
     #[test]
