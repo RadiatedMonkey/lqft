@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use crate::sim::System;
+use crate::util::FType;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -62,10 +63,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // pub struct GraphData<'a> {
 //     pub caption: &'a str,
 //     pub ydesc: &'a str,
-//     pub xdata: &'a [f64],
-//     pub ydata: &'a [f64],
-//     pub xlim: Range<f64>,
-//     pub ylim: Range<f64>,
+//     pub xdata: &'a [FType],
+//     pub ydata: &'a [FType],
+//     pub xlim: Range<FType>,
+//     pub ylim: Range<FType>,
 //     pub description: &'a str,
 // }
 //
@@ -94,7 +95,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // }
 //
 // /// Custom function to find the smallest float in a slice since floats don't implement Eq.
-// fn find_min(data: &[f64]) -> f64 {
+// fn find_min(data: &[FType]) -> FType {
 //     data.iter()
 //         .copied()
 //         .reduce(|a, b| if a.total_cmp(&b).is_lt() { a } else { b })
@@ -102,7 +103,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 // }
 //
 // /// Custom function to find the largest float in a slice since floats don't implement Eq.
-// fn find_max(data: &[f64]) -> f64 {
+// fn find_max(data: &[FType]) -> FType {
 //     data.iter()
 //         .copied()
 //         .reduce(|a, b| if a.total_cmp(&b).is_gt() { a } else { b })
@@ -120,15 +121,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //     let avg_stats_capture_time = stats
 //         .stats_time_history
 //         .iter()
-//         .map(|&t| t as f64)
-//         .sum::<f64>()
-//         / stats.stats_time_history.len() as f64;
+//         .map(|&t| t as FType)
+//         .sum::<FType>()
+//         / stats.stats_time_history.len() as FType;
 //     let avg_sweep_time = stats
 //         .sweep_time_history
 //         .iter()
-//         .map(|&t| t as f64)
-//         .sum::<f64>()
-//         / stats.sweep_time_history.len() as f64;
+//         .map(|&t| t as FType)
+//         .sum::<FType>()
+//         / stats.sweep_time_history.len() as FType;
 //
 //     // let acceptance_range = &sim.acceptance_desc.desired_range;
 //     let lines = [
@@ -216,7 +217,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //         if let Some(point) = stats.thermalised_at {
 //             // Plot thermalisation point
 //             cc.draw_series(DashedLineSeries::new(
-//                 vec![(point as f64, ymin), (point as f64, ymax)],
+//                 vec![(point as FType, ymin), (point as FType, ymax)],
 //                 2,
 //                 4,
 //                 ShapeStyle {
@@ -234,8 +235,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //     Ok(())
 // }
 
-use prometheus::Encoder;
-use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
 use crate::all_public_in;
 use crate::observable_impl::{MeanValue, Variance};
@@ -340,8 +339,8 @@ impl<const Dim: usize> System<Dim> {
     pub fn push_metrics(&mut self) {
         let sweep_size = self.lattice().sweep_size();
 
-        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
-        self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
+        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v as f64));
+        self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v as f64));
 
         let metrics = &mut self.metrics;
 
@@ -349,13 +348,13 @@ impl<const Dim: usize> System<Dim> {
         set_int_to(&metrics.accepted_moves, self.data.stats.accepted_moves.load(Ordering::SeqCst));
 
         let accept_ratio = *self.data.stats.accept_ratio_history.last().unwrap();
-        metrics.accept_ratio.set(accept_ratio);
+        metrics.accept_ratio.set(accept_ratio as f64);
 
         let progress = self.data.stats.current_sweep as f64 / self.data.stats.desired_sweeps as f64;
         metrics.progress.set(progress);
 
-        metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
-        metrics.action_density.set(self.data.stats.current_action / sweep_size as f64);
+        metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed) as f64);
+        metrics.action_density.set(self.data.stats.current_action as f64 / sweep_size as f64);
 
         set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
 
@@ -366,7 +365,7 @@ impl<const Dim: usize> System<Dim> {
         metrics.stats_time.set(stats_time as f64);
 
         let therm_ratio = self.data.stats.thermalisation_ratio_history.last().copied().unwrap_or(0.0);
-        metrics.therm_ratio.set(therm_ratio);
+        metrics.therm_ratio.set(therm_ratio as f64);
 
         set_int_to(&metrics.completed_sweeps, self.data.stats.current_sweep as u64 + 1);
 

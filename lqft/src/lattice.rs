@@ -1,4 +1,5 @@
 use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
+use crate::util::FType;
 use anyhow::Context;
 use hdf5_metno as hdf5;
 use itertools::Itertools;
@@ -18,11 +19,11 @@ type AdjacentIndices = [usize; 8];
 #[derive(Clone)]
 pub struct Lattice<const Dim: usize> {
     iter_method: LatticeIterMethod,
-    spacing: f64,
+    spacing: FType,
     dimensions: [usize; Dim],
 
-    pub(crate) red_sites: Vec<f64>,
-    pub(crate) black_sites: Vec<f64>
+    pub(crate) red_sites: Vec<FType>,
+    pub(crate) black_sites: Vec<FType>
 }
 
 unsafe impl<const Dim: usize> Send for Lattice<Dim> {}
@@ -95,10 +96,10 @@ impl<const Dim: usize> Lattice<Dim> {
         let latest_idx = set_shape[0] - 1;
         let selection = ndarray::s![latest_idx..latest_idx + 1, .., .., .., ..];
 
-        let raw_slice: Array5<f64> = set
+        let raw_slice: Array5<FType> = set
             .read_slice(selection)
             .context("Unable to read dataset")?;
-        let raw_sites: ArrayView4<f64> = raw_slice.slice(ndarray::s![0, .., .., .., ..]);
+        let raw_sites: ArrayView4<FType> = raw_slice.slice(ndarray::s![0, .., .., .., ..]);
 
         let lattice = Lattice::from_view(raw_sites, desc.spacing, iter_method);
         tracing::info!(
@@ -119,7 +120,7 @@ impl<const Dim: usize> Lattice<Dim> {
         self.iter_method
     }
 
-    pub fn from_view(view: ArrayView4<f64>, spacing: f64, iter_method: LatticeIterMethod) -> Self {
+    pub fn from_view(view: ArrayView4<FType>, spacing: FType, iter_method: LatticeIterMethod) -> Self {
         let dimensions: (usize, usize, usize, usize) = view.dim();
 
         let count = view.len().div_ceil(2);
@@ -188,7 +189,7 @@ impl<const Dim: usize> Lattice<Dim> {
         (red, black)
     }
 
-    pub fn spacing(&self) -> f64 {
+    pub fn spacing(&self) -> FType {
         self.spacing
     }
 
@@ -197,7 +198,7 @@ impl<const Dim: usize> Lattice<Dim> {
         self.dimensions
     }
 
-    pub fn mean(&self) -> f64 {
+    pub fn mean(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.mean_seq(),
             LatticeIterMethod::Parallel => self.mean_par()
@@ -206,23 +207,23 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Sequentially computes the mean of the lattice
     #[inline]
-    pub fn mean_seq(&self) -> f64 {
-        let red_sum = self.red_sites.iter().sum::<f64>();
-        let black_sum = self.black_sites.iter().sum::<f64>();
+    pub fn mean_seq(&self) -> FType {
+        let red_sum = self.red_sites.iter().sum::<FType>();
+        let black_sum = self.black_sites.iter().sum::<FType>();
 
-        (red_sum + black_sum) / self.sweep_size() as f64
+        (red_sum + black_sum) / self.sweep_size() as FType
     }
 
     /// Computes the mean of the lattice in parallel.
     #[inline]
-    pub fn mean_par(&self) -> f64 {
-        let red_sum = self.red_sites.par_iter().sum::<f64>();
-        let black_sum = self.black_sites.par_iter().sum::<f64>();
+    pub fn mean_par(&self) -> FType {
+        let red_sum = self.red_sites.par_iter().sum::<FType>();
+        let black_sum = self.black_sites.par_iter().sum::<FType>();
 
-        (red_sum + black_sum) / self.sweep_size() as f64
+        (red_sum + black_sum) / self.sweep_size() as FType
     }
 
-    pub fn meansq(&self) -> f64 {
+    pub fn meansq(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.meansq_seq(),
             LatticeIterMethod::Parallel => self.meansq_par()
@@ -231,23 +232,23 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Sequentially computes the mean squared of the lattice
     #[inline]
-    pub fn meansq_seq(&self) -> f64 {
-        let red_sum = self.red_sites.iter().map(|x| x * x).sum::<f64>();
-        let black_sum = self.black_sites.iter().map(|x| x * x).sum::<f64>();
+    pub fn meansq_seq(&self) -> FType {
+        let red_sum = self.red_sites.iter().map(|x| x * x).sum::<FType>();
+        let black_sum = self.black_sites.iter().map(|x| x * x).sum::<FType>();
 
-        (red_sum + black_sum) / self.sweep_size() as f64
+        (red_sum + black_sum) / self.sweep_size() as FType
     }
 
     #[inline]
     /// Computes the mean squared of the lattice in parallel
-    pub fn meansq_par(&self) -> f64 {
-        let red_sum = self.red_sites.par_iter().map(|x| x * x).sum::<f64>();
-        let black_sum = self.black_sites.par_iter().map(|x| x * x).sum::<f64>();
+    pub fn meansq_par(&self) -> FType {
+        let red_sum = self.red_sites.par_iter().map(|x| x * x).sum::<FType>();
+        let black_sum = self.black_sites.par_iter().map(|x| x * x).sum::<FType>();
 
-        (red_sum + black_sum) / self.sweep_size() as f64
+        (red_sum + black_sum) / self.sweep_size() as FType
     }
 
-    pub fn variance(&self) -> f64 {
+    pub fn variance(&self) -> FType {
         match self.iter_method {
             LatticeIterMethod::Sequential => self.variance_seq(),
             LatticeIterMethod::Parallel => self.variance_par()
@@ -256,20 +257,20 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Sequentially computes the variance of the lattice.
     #[inline]
-    pub fn variance_seq(&self) -> f64 {
+    pub fn variance_seq(&self) -> FType {
         let mean = self.mean_seq();
         self.meansq_seq() - mean * mean
     }
 
     #[inline]
     /// Computes the variance of the lattice in parallel.
-    pub fn variance_par(&self) -> f64 {
+    pub fn variance_par(&self) -> FType {
         let mean = self.mean_par();
         self.meansq_par() - mean * mean
     }
 
     /// Fills the data with a fixed value.
-    pub fn filled(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
+    pub fn filled(dims: [usize; Dim], spacing: FType, iter_method: LatticeIterMethod, fill_value: FType) -> Self {
         let count = dims.iter().product::<usize>().div_ceil(2);
         let red_sites = vec![fill_value; count];
         let black_sites = vec![fill_value; count];
@@ -284,12 +285,12 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Fills the data with zeroes.
     #[inline]
-    pub fn zeroed(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod) -> Self {
+    pub fn zeroed(dims: [usize; Dim], spacing: FType, iter_method: LatticeIterMethod) -> Self {
         Self::filled(dims, spacing, iter_method, 0.0)
     }
 
     /// Fills the lattice with random data from a range.
-    pub fn random(dims: [usize; Dim], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
+    pub fn random(dims: [usize; Dim], spacing: FType, iter_method: LatticeIterMethod, range: Range<FType>) -> Self {
         tracing::debug!("Generating random scalar lattice of dimensions {dims:?}...");
 
         let count = dims.iter().product::<usize>().div_ceil(2);
@@ -407,7 +408,7 @@ impl<const Dim: usize> Lattice<Dim> {
 }
 
 // impl Index<usize> for Lattice {
-//     type Output = UnsafeCell<f64>;
+//     type Output = UnsafeCell<FType>;
 //
 //     fn index(&self, i: usize) -> &Self::Output {
 //         &self.sites[i]
@@ -415,7 +416,7 @@ impl<const Dim: usize> Lattice<Dim> {
 // }
 //
 // impl Index<[usize; 4]> for Lattice {
-//     type Output = UnsafeCell<f64>;
+//     type Output = UnsafeCell<FType>;
 //
 //     fn index(&self, pos: [usize; 4]) -> &Self::Output {
 //         &self.sites[self.to_index(pos)]

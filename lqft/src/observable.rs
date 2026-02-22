@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault};
 use nohash_hasher::NoHashHasher;
 use crate::sim::{System, SystemData};
+use crate::util::FType;
 
 pub struct ObservableRegistry<const Dim: usize> {
     map: HashMap<TypeId, Box<dyn ObservableState<Dim>>, BuildHasherDefault<NoHashHasher<u64>>>,
@@ -49,7 +50,7 @@ impl<const Dim: usize> ObservableRegistry<Dim> {
     }
 
     /// Retrieves the last measured value of the observable.
-    pub fn measured<O: Observable<Dim>>(&self) -> Option<f64> {
+    pub fn measured<O: Observable<Dim>>(&self) -> Option<FType> {
         let obs = self.get::<O>()?;
         obs.measured()
     }
@@ -102,7 +103,7 @@ pub trait ObservableState<const Dim: usize>: Send + Sync + 'static {
     }
 
     /// Returns the last measured quantity.
-    fn measured(&self) -> Option<f64>;
+    fn measured(&self) -> Option<FType>;
 
     /// Clears the observable's state.
     fn clear(&mut self);

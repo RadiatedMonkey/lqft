@@ -2,9 +2,9 @@
 
 use crate::snapshot::SnapshotState;
 use crate::stats::SystemStats;
+use crate::util::{AtomicFType, FType};
 use crate::{lattice::Lattice, sim::System};
 use anyhow::Context;
-use atomic_float::AtomicF64;
 use hdf5_metno::{self as hdf5, Extent, Extents, SimpleExtents};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -21,7 +21,7 @@ impl<const Dim: usize> System<Dim> {
     /// `th_threshold`, the system will be marked as thermalised.
     ///
     /// This function returns the current ratio and whether this ratio is considered thermalised.
-    pub fn compute_burn_in_ratio(&self) -> (f64, bool) {
+    pub fn compute_burn_in_ratio(&self) -> (FType, bool) {
         let bsize = self.th_block_size();
 
         let action_history = &self.stats().action_history;
@@ -31,10 +31,10 @@ impl<const Dim: usize> System<Dim> {
         }
 
         let last50 = &action_history[(ah_len - bsize)..];
-        let l50_avg = last50.iter().copied().sum::<f64>().abs() / bsize as f64;
+        let l50_avg = last50.iter().copied().sum::<FType>().abs() / bsize as FType;
 
         let prev50 = &action_history[(ah_len - 2 * bsize)..(ah_len - bsize)];
-        let p50_avg: f64 = prev50.iter().copied().sum::<f64>().abs() / bsize as f64;
+        let p50_avg: FType = prev50.iter().copied().sum::<FType>().abs() / bsize as FType;
 
         let ratio = (l50_avg - p50_avg).abs() / l50_avg;
         (ratio, ratio < self.th_threshold())
@@ -47,7 +47,7 @@ impl<const Dim: usize> System<Dim> {
             "Step size should not be adjusted after the system has thermalised"
         );
 
-        let acceptance_ratio = self.data.stats.accepted_moves() as f64 / self.data.stats.total_moves() as f64;
+        let acceptance_ratio = self.data.stats.accepted_moves() as FType / self.data.stats.total_moves() as FType;
 
         // Adjust dvar if acceptance ratio is 5% away from desired ratio
         if acceptance_ratio < self.data.acceptance_desc.desired_range.start {
@@ -136,7 +136,7 @@ pub struct LatticeCreateDesc<const Dim: usize> {
     /// The lattice spacing.
     ///
     /// Default value: `1.0`.
-    pub spacing: f64,
+    pub spacing: FType,
 }
 
 impl<const Dim: usize> Default for LatticeCreateDesc<Dim> {
@@ -161,7 +161,7 @@ pub enum SnapshotLocation {
 pub struct LatticeLoadDesc {
     pub hdf5_file: String,
     pub location: SnapshotLocation,
-    pub spacing: f64,
+    pub spacing: FType,
 }
 
 impl Default for LatticeLoadDesc {
@@ -191,12 +191,12 @@ pub struct AcceptanceDesc {
     /// ratio leaves this range, the step size will be adjusted to bring it back in range.
     ///
     /// Default value: `0.3..0.5`.
-    pub desired_range: Range<f64>,
+    pub desired_range: Range<FType>,
     /// The size of the correction to the step size. This is percentual change (e.g. `0.05` gives
     /// a 95% decrease or 105% increase in step size).
     ///
     /// Default value: `0.05`.
-    pub correction_size: f64,
+    pub correction_size: FType,
     /// The amount of sweeps between step size corrections.
     ///
     /// Default value: `20_000`.
@@ -207,7 +207,7 @@ pub struct AcceptanceDesc {
     /// the system can take long to thermalise.
     ///
     /// Default value: `1.0`.
-    pub initial_step_size: f64,
+    pub initial_step_size: FType,
 }
 
 impl Default for AcceptanceDesc {
@@ -242,7 +242,7 @@ pub struct BurnInDesc {
     /// The relative difference required for the system to be considered stabilised.
     ///
     /// Default value: `0.1`.
-    pub required_ratio: f64,
+    pub required_ratio: FType,
     /// How many thermalisation checks should be successful for the system to be considered
     /// thermalised.
     ///
@@ -267,9 +267,9 @@ impl Default for BurnInDesc {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InitialState {
     /// Sets every lattice site to the same fixed value.
-    Fixed(f64),
+    Fixed(FType),
     /// Randomises the lattice using values from this range.
-    RandomRange(Range<f64>),
+    RandomRange(Range<FType>),
 }
 
 /// The type of snapshots to take.
@@ -327,9 +327,9 @@ impl<const Dim: usize> Default for SnapshotDesc<Dim> {
 #[derive(Debug, Clone)]
 pub struct ParamDesc {
     /// The coupling constant of the theory.
-    pub coupling: f64,
+    pub coupling: FType,
     /// The squared mass of the field.
-    pub mass_squared: f64,
+    pub mass_squared: FType,
 }
 
 impl Default for ParamDesc {
@@ -473,7 +473,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
 
                 let set_name = format!("{elapsed}");
                 let set = snapshot_group
-                    .new_dataset::<f64>()
+                    .new_dataset::<FType>()
                     .chunk(&chunk_size)
                     .shape(&shape_size)
                     .shuffle()
@@ -497,7 +497,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
             lattice,
             mass_squared: self.param_desc.mass_squared,
             coupling: self.param_desc.coupling,
-            current_step_size: AtomicF64::new(self.acceptance_desc.initial_step_size),
+            current_step_size: AtomicFType::new(self.acceptance_desc.initial_step_size),
             acceptance_desc: self.acceptance_desc,
             burn_in_desc: self.burn_in_desc,
             correlation_slices: Vec::new(),

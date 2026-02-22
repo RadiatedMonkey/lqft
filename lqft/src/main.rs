@@ -8,6 +8,7 @@ mod snapshot;
 mod stats;
 mod metrics;
 mod observable_impl;
+pub mod util;
 
 use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
 use std::process::ExitCode;
@@ -61,6 +62,8 @@ async fn app() -> anyhow::Result<()> {
 
     tokio::spawn(task);
 
+    rayon::ThreadPoolBuilder::new().num_threads(4).build_global().unwrap();
+
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
             mass_squared: -1.0,
@@ -73,7 +76,7 @@ async fn app() -> anyhow::Result<()> {
         //     flush_method: FlushMethod::Sequential,
         // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
-            dimensions: [40, 20, 20, 20],
+            dimensions: [100, 50],
             initial_state: InitialState::RandomRange(-0.1..0.1),
             spacing: 1.0,
         }))
@@ -97,14 +100,14 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50_000;
+    let total_sweeps = 500_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
 
     // let stats = sim.stats();
 
-    // let sweepx = (0..total_sweeps).map(|i| i as f64).collect::<Vec<_>>();
+    // let sweepx = (0..total_sweeps).map(|i| i as FType).collect::<Vec<_>>();
     //
     // let variance = stats
     //     .mean_history
@@ -114,19 +117,19 @@ async fn app() -> anyhow::Result<()> {
     //     .collect::<Vec<_>>();
     //
     // let tdata = (0..sim.lattice().dimensions()[0])
-    //     .map(|v| v as f64)
+    //     .map(|v| v as FType)
     //     .collect::<Vec<_>>();
     // // let corr2 = sim.correlator2();
     //
     // let stats_time_mapped = stats
     //     .stats_time_history
     //     .iter()
-    //     .map(|&t| t as f64)
+    //     .map(|&t| t as FType)
     //     .collect::<Vec<_>>();
     // let sweep_time_mapped = stats
     //     .sweep_time_history
     //     .iter()
-    //     .map(|&t| t as f64)
+    //     .map(|&t| t as FType)
     //     .collect::<Vec<_>>();
     //
     // let desc = GraphDesc {

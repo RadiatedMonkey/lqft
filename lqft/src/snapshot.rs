@@ -59,8 +59,8 @@ impl<const Dim: usize> SnapshotState<Dim> {
         //     tracing::trace!("Snapshot fragment {fragment_counter} received");
         //
         //     let sites = &fragment.lattice.sites;
-        //     let raw_slice: &[f64] =
-        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
+        //     let raw_slice: &[FType] =
+        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const FType, sites.len()) };
         //
         //     let view = ArrayView5::from_shape((1, st, sx, sy, sz), raw_slice);
         //
@@ -96,14 +96,14 @@ impl<const Dim: usize> SnapshotState<Dim> {
         //     sz,
         // } = desc;
         //
-        // let mut buffer = Array5::<f64>::zeros((batch_size, st, sx, sy, sz));
+        // let mut buffer = Array5::<FType>::zeros((batch_size, st, sx, sy, sz));
         //
         // let mut fragment_counter = 0;
         // let mut batch_counter = 0;
         // while let Ok(fragment) = rx.recv() {
         //     let sites = &fragment.lattice.sites;
-        //     let raw_slice: &[f64] =
-        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const f64, sites.len()) };
+        //     let raw_slice: &[FType] =
+        //         unsafe { std::slice::from_raw_parts(sites.as_ptr() as *const FType, sites.len()) };
         //
         //     let mut subview = buffer.slice_mut(ndarray::s![batch_counter, .., .., .., ..]);
         //     let incoming_view = ArrayView4::from_shape((st, sx, sy, sz), raw_slice).unwrap();

@@ -2,17 +2,14 @@ use crate::lattice::Lattice;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
-use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
-use num_traits::Pow;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
-use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
+use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
 use serde::Deserialize;
 use serde::Serialize;
-use std::ops::{Div, Range};
 use std::simd::num::SimdFloat;
-use std::simd::{f64x4, u64x8, usizex4, Select, Simd, StdFloat};
+use std::simd::{Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool};
@@ -20,24 +17,23 @@ use std::time::Instant;
 use rand::RngExt;
 use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
-use crate::all_public_in;
+use crate::util::{AtomicFType, FType, SIMD_LANES, SimdFType, SimdUType};
 
-const LANES: usize = 4;
-const CTR: usizex4 = usizex4::from_array([0, 1, 2, 3]);
-const TWO: usizex4 = usizex4::splat(2);
+const CTR: SimdUType = SimdUType::from_array([0, 1, 2, 3]);
+const TWO: SimdUType = SimdUType::splat(2);
 
 /// Simulation settings that should be saved to the archive.
 #[derive(H5Type, Serialize, Deserialize)]
 #[repr(C)]
 pub struct SystemSettings {
-    pub spacing: f64,
-    pub step_size: f64,
-    pub mass_squared: f64,
-    pub coupling: f64,
+    pub spacing: FType,
+    pub step_size: FType,
+    pub mass_squared: FType,
+    pub coupling: FType,
 }
 
-impl From<SystemSettings> for [f64; 4] {
-    fn from(settings: SystemSettings) -> [f64; 4] {
+impl From<SystemSettings> for [FType; 4] {
+    fn from(settings: SystemSettings) -> [FType; 4] {
         [
             settings.spacing,
             settings.step_size,
@@ -49,15 +45,15 @@ impl From<SystemSettings> for [f64; 4] {
 
 pub struct SystemData<const LatticeDim: usize> {
     pub lattice: Lattice<LatticeDim>,
-    pub mass_squared: f64,
-    pub coupling: f64,
+    pub mass_squared: FType,
+    pub coupling: FType,
     pub acceptance_desc: AcceptanceDesc,
     pub burn_in_desc: BurnInDesc,
     /// A vector for every possible C(t)
     /// where the inner vector is for every sweep
-    pub correlation_slices: Vec<f64>,
+    pub correlation_slices: Vec<FType>,
     pub measurement_interval: usize,
-    pub current_step_size: AtomicF64,
+    pub current_step_size: AtomicFType,
     pub stats: SystemStats,
     pub successful_therm_checks: usize
 }
@@ -70,13 +66,15 @@ pub struct System<const LatticeDim: usize> {
     pub data: SystemData<LatticeDim>
 }
 
+// TODO: This can probably be optimised. The compiler is not unrolling the loop which costs quite a bit of time.
+// See https://rust.godbolt.org/z/K58ab61ee.
 #[inline(always)]
-fn to_coord<const Dim: usize>(idx: usizex4, dims: [usize; Dim]) -> [usizex4; Dim] {
-    let mut coords = [usizex4::splat(0); Dim];
+fn to_coord<const Dim: usize>(idx: SimdUType, dims: [usize; Dim]) -> [SimdUType; Dim] {
+    let mut coords = [SimdUType::splat(0); Dim];
     let mut rem = idx;
 
     for i in (0..Dim).rev() {
-        let dim = usizex4::splat(dims[i]);
+        let dim = SimdUType::splat(dims[i]);
 
         coords[i] = rem % dim;
         rem /= dim;
@@ -85,25 +83,27 @@ fn to_coord<const Dim: usize>(idx: usizex4, dims: [usize; Dim]) -> [usizex4; Dim
     coords
 }
 
+// TODO: This can probably be optimised. The compiler is not unrolling the loop which costs quite a bit of time.
+// See https://rust.godbolt.org/z/K58ab61ee.
 #[inline(always)]
-fn to_index<const Dim: usize>(c: [usizex4; Dim], dims: [usize; Dim]) -> usizex4 {
-    let mut mult = usizex4::splat(1);
-    let mut idx = usizex4::splat(0);
+fn to_index<const Dim: usize>(c: [SimdUType; Dim], dims: [usize; Dim]) -> SimdUType {
+    let mut mult = SimdUType::splat(1);
+    let mut idx = SimdUType::splat(0);
     for d in (0..Dim).rev() {
         idx += c[d] * mult;            
-        mult *= usizex4::splat(dims[d]);
+        mult *= SimdUType::splat(dims[d]);
     }
 
     idx
 }
 
 #[inline(always)]
-fn find_fneighbors<const Dim: usize>(site_idx: usizex4, dims: [usize; Dim], dir: usize) -> usizex4 {
+fn find_fneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], dir: usize) -> SimdUType {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
-    const ONE: usizex4 = usizex4::splat(1);
-    let dim = usizex4::splat(dims[dir]);
+    const ONE: SimdUType = SimdUType::splat(1);
+    let dim = SimdUType::splat(dims[dir]);
 
     new[dir] = (coords[dir] + ONE) % dim;
 
@@ -111,12 +111,12 @@ fn find_fneighbors<const Dim: usize>(site_idx: usizex4, dims: [usize; Dim], dir:
 }
 
 #[inline(always)]
-fn find_bneighbors<const Dim: usize>(site_idx: usizex4, dims: [usize; Dim], dir: usize) -> usizex4 {
+fn find_bneighbors<const Dim: usize>(site_idx: SimdUType, dims: [usize; Dim], dir: usize) -> SimdUType {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
-    const ONE: usizex4 = usizex4::splat(1);
-    let dim = usizex4::splat(dims[dir]);
+    const ONE: SimdUType = SimdUType::splat(1);
+    let dim = SimdUType::splat(dims[dir]);
 
     new[dir] = (coords[dir] + (dim - ONE)) % dim;
 
@@ -128,18 +128,18 @@ impl<const Dim: usize> System<Dim> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
-        rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; Dim],
-        spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
+        rng: &mut R, idx: usize, chunk: &mut [FType], neigh_sites: &[FType], dimensions: [usize; Dim],
+        spacing: FType, step_size: FType, mass_squared: FType, coupling: FType
     ) -> u64 {
-        let curr_vals = f64x4::from_slice(chunk);
+        let curr_vals = SimdFType::from_slice(chunk);
 
-        let site_idxs = (usizex4::splat(idx) + CTR) * TWO;
+        let site_idxs = (SimdUType::splat(idx) + CTR) * TWO;
 
         // Generate flip probabilities
-        let mut offset = f64x4::splat(0.0);
-        let mut realized = f64x4::splat(0.0);
+        let mut offset = SimdFType::splat(0.0);
+        let mut realized = SimdFType::splat(0.0);
 
-        for i in 0..LANES {
+        for i in 0..SIMD_LANES {
             offset[i] = rng.random_range(-step_size..step_size);
             realized[i] = rng.random_range(0.0..1.0);
         }
@@ -147,19 +147,19 @@ impl<const Dim: usize> System<Dim> {
         let new_vals = curr_vals + offset;
 
         let action_deltas = {
-            let mut der_sum = f64x4::splat(0.0);
-            let mut new_der_sum = f64x4::splat(0.0);
+            let mut der_sum = SimdFType::splat(0.0);
+            let mut new_der_sum = SimdFType::splat(0.0);
 
-            let a = f64x4::splat(spacing);
-            let div_a = f64x4::splat(1.0) / a;
+            let a = SimdFType::splat(spacing);
+            let div_a = SimdFType::splat(1.0) / a;
 
-            for i in 0..4 {
+            for i in 0..Dim {
                 // FIXME: request actual neighbour indices
                 let fneigh_idxs = find_fneighbors(site_idxs, dimensions, i);
                 let bneigh_idxs = find_bneighbors(site_idxs, dimensions, i);
 
-                let fneigh_vals = f64x4::gather_or_default(neigh_sites, fneigh_idxs / TWO);
-                let bneigh_vals = f64x4::gather_or_default(neigh_sites, bneigh_idxs / TWO);
+                let fneigh_vals = SimdFType::gather_or_default(neigh_sites, fneigh_idxs / TWO);
+                let bneigh_vals = SimdFType::gather_or_default(neigh_sites, bneigh_idxs / TWO);
 
                 {
                     let f1_sqrt = (fneigh_vals - curr_vals) * div_a;
@@ -182,11 +182,11 @@ impl<const Dim: usize> System<Dim> {
                 }
             }
 
-            const HALF: f64x4 = f64x4::splat(0.5);
-            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
+            const HALF: SimdFType = SimdFType::splat(0.5);
+            const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);
 
-            let msquared = f64x4::splat(mass_squared);
-            let coupling = f64x4::splat(coupling);
+            let msquared = SimdFType::splat(mass_squared);
+            let coupling = SimdFType::splat(coupling);
 
             let curr_vals2 = curr_vals * curr_vals;
             let new_vals2 = new_vals * new_vals;
@@ -263,7 +263,7 @@ impl<const Dim: usize> System<Dim> {
             let red_sites = &mut self.data.lattice.red_sites;
             let black_sites = &self.data.lattice.black_sites;
 
-            red_sites.par_chunks_mut(LANES).enumerate().for_each_init(
+            red_sites.par_chunks_mut(SIMD_LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
@@ -283,7 +283,7 @@ impl<const Dim: usize> System<Dim> {
 
             let red_sites = &self.data.lattice.red_sites;
             let black_sites = &mut self.data.lattice.black_sites;
-            black_sites.par_chunks_mut(LANES).enumerate().for_each_init(
+            black_sites.par_chunks_mut(SIMD_LANES).enumerate().for_each_init(
                 || {
                     let mut seed_rng = rand::rng();
                     Xoshiro256PlusPlus::from_rng(&mut seed_rng)
@@ -351,7 +351,7 @@ impl<const Dim: usize> System<Dim> {
         self.push_metrics();
 
         for t in 0..self.data.lattice.dimensions()[0] {
-            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as f64;
+            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as FType;
         }
 
         tracing::info!("Run completed");
@@ -361,7 +361,7 @@ impl<const Dim: usize> System<Dim> {
 
     /// Obtains the latest measurements of the given observable.
     #[inline]
-    pub fn measured<O: Observable<Dim>>(&self) -> Option<f64> {
+    pub fn measured<O: Observable<Dim>>(&self) -> Option<FType> {
         self.observables.measured::<O>()
     }
 
@@ -374,19 +374,19 @@ impl<const Dim: usize> System<Dim> {
     }
 
     /// Computes the autocorrelation time of the system in its current state.
-    fn compute_autocorrelation(&self) -> f64 {
+    fn compute_autocorrelation(&self) -> FType {
         todo!()
     }
 
     /// Computes the absolute action of the entire lattice.
-    pub fn compute_full_action(&self) -> f64 {
+    pub fn compute_full_action(&self) -> FType {
         // TODO: Add sequential version
 
-        let msquared = f64x4::splat(self.mass_squared());
-        let coupling = f64x4::splat(self.coupling());
-        let spacing = f64x4::splat(self.lattice().spacing());
+        let msquared = SimdFType::splat(self.mass_squared());
+        let coupling = SimdFType::splat(self.coupling());
+        let spacing = SimdFType::splat(self.lattice().spacing());
         let a4 = spacing * spacing * spacing * spacing;
-        let div_a = f64x4::splat(1.0) / spacing;
+        let div_a = SimdFType::splat(1.0) / spacing;
         let dims = self.lattice().dimensions();
 
         // Compute action for red sites
@@ -397,16 +397,16 @@ impl<const Dim: usize> System<Dim> {
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                let site_vals = f64x4::from_slice(chunk);
-                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
+                let site_vals = SimdFType::from_slice(chunk);
+                let site_idxs = (SimdUType::splat(i) + CTR) * TWO;
 
-                let mut der_sum = f64x4::splat(0.0);
-                for i in 0..4 {
+                let mut der_sum = SimdFType::splat(0.0);
+                for i in 0..Dim {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x4::gather_or_default(black_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x4::gather_or_default(black_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = SimdFType::gather_or_default(black_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = SimdFType::gather_or_default(black_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -414,8 +414,8 @@ impl<const Dim: usize> System<Dim> {
                     der_sum += f1_sqrt * f1_sqrt;
                 }
 
-                const HALF: f64x4 = f64x4::splat(0.5);
-                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
+                const HALF: SimdFType = SimdFType::splat(0.5);
+                const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -427,7 +427,7 @@ impl<const Dim: usize> System<Dim> {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x4::splat(0.0),
+                || SimdFType::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();
@@ -438,16 +438,16 @@ impl<const Dim: usize> System<Dim> {
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                let site_vals = f64x4::from_slice(chunk);
-                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
+                let site_vals = SimdFType::from_slice(chunk);
+                let site_idxs = (SimdUType::splat(i) + CTR) * TWO;
 
-                let mut der_sum = f64x4::splat(0.0);
-                for i in 0..4 {
+                let mut der_sum = SimdFType::splat(0.0);
+                for i in 0..Dim {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x4::gather_or_default(red_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x4::gather_or_default(red_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = SimdFType::gather_or_default(red_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = SimdFType::gather_or_default(red_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -455,8 +455,8 @@ impl<const Dim: usize> System<Dim> {
                     der_sum += f1_sqrt * f1_sqrt
                 }
 
-                const HALF: f64x4 = f64x4::splat(0.5);
-                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
+                const HALF: SimdFType = SimdFType::splat(0.5);
+                const TFOURTH: SimdFType = SimdFType::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -468,7 +468,7 @@ impl<const Dim: usize> System<Dim> {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x4::splat(0.0),
+                || SimdFType::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();
@@ -476,7 +476,7 @@ impl<const Dim: usize> System<Dim> {
         action_red + action_black
     }
 
-    fn get_timeslice(&mut self) -> Vec<f64> {
+    fn get_timeslice(&mut self) -> Vec<FType> {
         todo!()
         // Compute the spatial sum for every time slice
         // let st = self.data.lattice.dim_t();
@@ -502,11 +502,11 @@ impl<const Dim: usize> System<Dim> {
     /// The current thermalisation ratio threshold.
     ///
     /// See [`SystemBuilder::th_threshold`] for more information.
-    pub fn th_threshold(&self) -> f64 {
+    pub fn th_threshold(&self) -> FType {
         self.data.burn_in_desc.required_ratio
     }
 
-    pub fn current_step_size(&self) -> f64 {
+    pub fn current_step_size(&self) -> FType {
         self.data.current_step_size.load(Ordering::Relaxed)
     }
 
@@ -517,17 +517,17 @@ impl<const Dim: usize> System<Dim> {
         self.data.burn_in_desc.block_size
     }
 
-    pub fn correlator2(&self) -> &[f64] {
+    pub fn correlator2(&self) -> &[FType] {
         &self.data.correlation_slices
     }
 
     /// The current mass squared.
-    pub fn mass_squared(&self) -> f64 {
+    pub fn mass_squared(&self) -> FType {
         self.data.mass_squared
     }
 
     /// The current coupling constant.
-    pub fn coupling(&self) -> f64 {
+    pub fn coupling(&self) -> FType {
         self.data.coupling
     }
 

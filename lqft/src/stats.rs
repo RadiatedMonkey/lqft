@@ -1,6 +1,7 @@
 use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
+use crate::util::FType;
 use atomic_float::AtomicF64;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -18,19 +19,19 @@ pub struct SystemStats {
     /// History of accepted moves. A new datapoint is recorded on every statistics interval.
     pub accepted_move_history: Vec<u64>,
     /// History of accepted move ratio.
-    pub accept_ratio_history: Vec<f64>,
+    pub accept_ratio_history: Vec<FType>,
     /// History of the step size.
-    pub step_size_history: Vec<f64>,
+    pub step_size_history: Vec<FType>,
     /// History of the field mean
-    pub mean_history: Vec<f64>,
+    pub mean_history: Vec<FType>,
     /// History of the field variance.
-    pub meansq_history: Vec<f64>,
+    pub meansq_history: Vec<FType>,
     /// History of the action over time.
-    pub action_history: Vec<f64>,
+    pub action_history: Vec<FType>,
     /// The action at the current point in time.
-    pub current_action: f64,
+    pub current_action: FType,
     /// The history of the thermalisation ratio.
-    pub thermalisation_ratio_history: Vec<f64>,
+    pub thermalisation_ratio_history: Vec<FType>,
     /// The sweep at which the system first passed the thermalisation threshold.
     pub thermalised_at: Option<usize>,
     /// The amount of measurements performed after thermalisation.
@@ -45,12 +46,12 @@ pub struct SystemStats {
 pub struct SweepStats {
     pub total_moves: u64,
     pub accepted_moves: u64,
-    pub accept_ratio: f64,
-    pub step_size: f64,
-    pub mean: f64,
-    pub meansq: f64,
-    pub action: f64,
-    pub th_ratio: f64,
+    pub accept_ratio: FType,
+    pub step_size: FType,
+    pub mean: FType,
+    pub meansq: FType,
+    pub action: FType,
+    pub th_ratio: FType,
     pub performed_measurements: usize,
     pub sweep_time: u128,
     pub stats_time: u128,
@@ -75,7 +76,7 @@ impl<const Dim: usize> System<Dim> {
 
         let accept = self.data.stats.accepted_moves();
         let total = self.data.stats.total_moves();
-        let ratio = accept as f64 / total as f64 * 100.0;
+        let ratio = accept as FType / total as FType * 100.0;
 
         self.data.stats.accepted_move_history.push(accept);
         self.data.stats.accept_ratio_history.push(ratio);
@@ -154,7 +155,7 @@ impl SystemStats {
     }
 
     /// The most recent value of the whole system action.
-    pub fn current_action(&self) -> f64 {
+    pub fn current_action(&self) -> FType {
         self.current_action
     }
 

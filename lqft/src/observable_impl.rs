@@ -4,6 +4,7 @@ use std::any::Any;
 
 use crate::observable::{MeasureFrequency, Observable, ObservableState};
 use crate::sim::SystemData;
+use crate::util::FType;
 
 /// Measures the mean of the lattice.
 pub struct MeanValue;
@@ -19,7 +20,7 @@ impl<const Dim: usize> Observable<Dim> for MeanValue {
 }
 
 pub struct MeanValueState {
-    data: Vec<f64>
+    data: Vec<FType>
 }
 
 impl<const Dim: usize> ObservableState<Dim> for MeanValueState {
@@ -40,7 +41,7 @@ impl<const Dim: usize> ObservableState<Dim> for MeanValueState {
         self.data.push(mean);
     }
 
-    fn measured(&self) -> Option<f64> {
+    fn measured(&self) -> Option<FType> {
         self.data.last().copied()
     }
 
@@ -67,7 +68,7 @@ impl<const Dim: usize> Observable<Dim> for Variance {
 }
 
 pub struct VarianceState {
-    data: Vec<f64>
+    data: Vec<FType>
 }
 
 impl<const Dim: usize> ObservableState<Dim> for VarianceState {
@@ -88,7 +89,7 @@ impl<const Dim: usize> ObservableState<Dim> for VarianceState {
         self.data.push(mean);
     }
 
-    fn measured(&self) -> Option<f64> {
+    fn measured(&self) -> Option<FType> {
         self.data.last().copied()
     }
 
