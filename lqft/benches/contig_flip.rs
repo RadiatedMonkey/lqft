@@ -2,7 +2,7 @@
 
 use std::cell::UnsafeCell;
 use std::hint::black_box;
-use std::simd::{f64x4, f64x8, u64x8, Select, Simd, StdFloat, ToBytes};
+use std::simd::{f64x4, f64x4, u64x8, Select, Simd, StdFloat, ToBytes};
 use std::simd::cmp::SimdPartialOrd;
 use std::simd::num::SimdFloat;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -147,7 +147,7 @@ fn simd_flip(lattice: &mut ColoredLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, chunk| {
-            let curr = f64x8::from_slice(chunk);
+            let curr = f64x4::from_slice(chunk);
 
             let mut rand_vals = [0.0f64; LANES];
             let mut probs = [0.0f64; LANES];
@@ -157,8 +157,8 @@ fn simd_flip(lattice: &mut ColoredLattice) {
                 probs[i] = rng.random_range(0.0..1.0);
             }
 
-            let offset = f64x8::from_array(rand_vals);
-            let realized = f64x8::from_array(probs);
+            let offset = f64x4::from_array(rand_vals);
+            let realized = f64x4::from_array(probs);
             let new_val = curr + offset;
 
             let prob_threshold = (curr - new_val).exp();
@@ -176,7 +176,7 @@ fn simd_flip(lattice: &mut ColoredLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, chunk| {
-            let curr = f64x8::from_slice(chunk);
+            let curr = f64x4::from_slice(chunk);
 
             let mut probs = [0.0f64; LANES];
             let mut rand_vals = [0.0f64; LANES];
@@ -186,8 +186,8 @@ fn simd_flip(lattice: &mut ColoredLattice) {
                 probs[i] = rng.random_range(0.0..1.0);
             }
 
-            let offset = f64x8::from_array(rand_vals);
-            let realized = f64x8::from_array(probs);
+            let offset = f64x4::from_array(rand_vals);
+            let realized = f64x4::from_array(probs);
             let new_val = curr + offset;
 
             let prob_threshold = (curr - new_val).exp();
@@ -207,10 +207,10 @@ fn simd_flip2(lattice: &mut ColoredLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, chunk| {
-            let curr = f64x8::from_slice(chunk);
+            let curr = f64x4::from_slice(chunk);
 
-            let mut offset = f64x8::splat(0.0);
-            let mut realized = f64x8::splat(0.0);
+            let mut offset = f64x4::splat(0.0);
+            let mut realized = f64x4::splat(0.0);
 
             for i in 0..LANES {
                 realized[i] = rng.random_range(-0.5..0.5);
@@ -234,10 +234,10 @@ fn simd_flip2(lattice: &mut ColoredLattice) {
             Xoshiro256PlusPlus::from_rng(&mut rng)
         },
         |rng, chunk| {
-            let curr = f64x8::from_slice(chunk);
+            let curr = f64x4::from_slice(chunk);
 
-            let mut offset = f64x8::splat(0.0);
-            let mut realized = f64x8::splat(0.0);
+            let mut offset = f64x4::splat(0.0);
+            let mut realized = f64x4::splat(0.0);
 
             for i in 0..LANES {
                 realized[i] = rng.random_range(-0.5..0.5);

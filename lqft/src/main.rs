@@ -63,7 +63,7 @@ async fn app() -> anyhow::Result<()> {
 
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
-            mass_squared: 1.0,
+            mass_squared: -1.0,
             coupling: 1.0,
         })
         // .enable_snapshot(SnapshotDesc {
@@ -97,7 +97,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 5_000;
+    let total_sweeps = 50_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::ops::{Div, Range};
 use std::simd::num::SimdFloat;
-use std::simd::{f64x4, f64x8, u64x8, usizex4, usizex8, Select, Simd, StdFloat};
+use std::simd::{f64x4, u64x8, usizex4, Select, Simd, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool};
@@ -21,6 +21,10 @@ use rand::RngExt;
 use crate::observable::{Observable, ObservableRegistry};
 use crate::metrics::MetricState;
 use crate::all_public_in;
+
+const LANES: usize = 4;
+const CTR: usizex4 = usizex4::from_array([0, 1, 2, 3]);
+const TWO: usizex4 = usizex4::splat(2);
 
 /// Simulation settings that should be saved to the archive.
 #[derive(H5Type, Serialize, Deserialize)]
@@ -70,10 +74,10 @@ all_public_in!(
 );
 
 #[inline(always)]
-fn to_coord(idx: usizex8, dims: [usize; 4]) -> [usizex8; 4] {
-    let sx = usizex8::splat(dims[1]);
-    let sy = usizex8::splat(dims[2]);
-    let sz = usizex8::splat(dims[3]);
+fn to_coord(idx: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
+    let sx = usizex4::splat(dims[1]);
+    let sy = usizex4::splat(dims[2]);
+    let sz = usizex4::splat(dims[3]);
 
     let z = idx % sz;
 
@@ -89,21 +93,21 @@ fn to_coord(idx: usizex8, dims: [usize; 4]) -> [usizex8; 4] {
 }
 
 #[inline(always)]
-fn to_index(c: [usizex8; 4], dims: [usize; 4]) -> usizex8 {
-    let sx = usizex8::splat(dims[1]);
-    let sy = usizex8::splat(dims[2]);
-    let sz = usizex8::splat(dims[3]);
+fn to_index(c: [usizex4; 4], dims: [usize; 4]) -> usizex4 {
+    let sx = usizex4::splat(dims[1]);
+    let sy = usizex4::splat(dims[2]);
+    let sz = usizex4::splat(dims[3]);
 
     (c[0] * sx * sy * sz) + (c[1] * sy * sz) + (c[2] * sz) + c[3]
 }
 
 #[inline(always)]
-fn find_fneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
+fn find_fneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
-    const ONE: usizex8 = usizex8::splat(1);
-    let dim = usizex8::splat(dims[dir]);
+    const ONE: usizex4 = usizex4::splat(1);
+    let dim = usizex4::splat(dims[dir]);
 
     new[dir] = (coords[dir] + ONE) % dim;
 
@@ -111,12 +115,12 @@ fn find_fneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
 }
 
 #[inline(always)]
-fn find_bneighbors(site_idx: usizex8, dims: [usize; 4], dir: usize) -> usizex8 {
+fn find_bneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
-    const ONE: usizex8 = usizex8::splat(1);
-    let dim = usizex8::splat(dims[dir]);
+    const ONE: usizex4 = usizex4::splat(1);
+    let dim = usizex4::splat(dims[dir]);
 
     new[dir] = (coords[dir] + (dim - ONE)) % dim;
 
@@ -131,19 +135,15 @@ impl System {
         rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
         spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
     ) -> u64 {
-        let curr_vals = f64x8::from_slice(chunk);
+        let curr_vals = f64x4::from_slice(chunk);
 
-        // `idx` is only the chunk index, convert the chunk index to 8 site indices.
-        const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-        const TWO: usizex8 = usizex8::splat(2);
-
-        let site_idxs = (usizex8::splat(idx) + CTR) * TWO;
+        let site_idxs = (usizex4::splat(idx) + CTR) * TWO;
 
         // Generate flip probabilities
-        let mut offset = f64x8::splat(0.0);
-        let mut realized = f64x8::splat(0.0);
+        let mut offset = f64x4::splat(0.0);
+        let mut realized = f64x4::splat(0.0);
 
-        for i in 0..8 {
+        for i in 0..LANES {
             offset[i] = rng.random_range(-step_size..step_size);
             realized[i] = rng.random_range(0.0..1.0);
         }
@@ -151,19 +151,19 @@ impl System {
         let new_vals = curr_vals + offset;
 
         let action_deltas = {
-            let mut der_sum = f64x8::splat(0.0);
-            let mut new_der_sum = f64x8::splat(0.0);
+            let mut der_sum = f64x4::splat(0.0);
+            let mut new_der_sum = f64x4::splat(0.0);
 
-            let a = f64x8::splat(spacing);
-            let div_a = f64x8::splat(1.0) / a;
+            let a = f64x4::splat(spacing);
+            let div_a = f64x4::splat(1.0) / a;
 
             for i in 0..4 {
                 // FIXME: request actual neighbour indices
                 let fneigh_idxs = find_fneighbors(site_idxs, dimensions, i);
                 let bneigh_idxs = find_bneighbors(site_idxs, dimensions, i);
 
-                let fneigh_vals = f64x8::gather_or_default(neigh_sites, fneigh_idxs / TWO);
-                let bneigh_vals = f64x8::gather_or_default(neigh_sites, bneigh_idxs / TWO);
+                let fneigh_vals = f64x4::gather_or_default(neigh_sites, fneigh_idxs / TWO);
+                let bneigh_vals = f64x4::gather_or_default(neigh_sites, bneigh_idxs / TWO);
 
                 {
                     let f1_sqrt = (fneigh_vals - curr_vals) * div_a;
@@ -186,11 +186,11 @@ impl System {
                 }
             }
 
-            const HALF: f64x8 = f64x8::splat(0.5);
-            const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);;
+            const HALF: f64x4 = f64x4::splat(0.5);
+            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);;
 
-            let msquared = f64x8::splat(mass_squared);
-            let coupling = f64x8::splat(coupling);
+            let msquared = f64x4::splat(mass_squared);
+            let coupling = f64x4::splat(coupling);
 
             let curr_vals2 = curr_vals * curr_vals;
             let new_vals2 = new_vals * new_vals;
@@ -252,8 +252,6 @@ impl System {
         let dimensions = self.data.lattice.dimensions();
 
         for i in 0..total_sweeps {
-            const LANES: usize = 8;
-
             sweep_timer = Instant::now();
             self.data.stats.current_sweep = i;
 
@@ -388,11 +386,11 @@ impl System {
     pub fn compute_full_action(&self) -> f64 {
         // TODO: Add sequential version
 
-        let msquared = f64x8::splat(self.mass_squared());
-        let coupling = f64x8::splat(self.coupling());
-        let spacing = f64x8::splat(self.lattice().spacing());
+        let msquared = f64x4::splat(self.mass_squared());
+        let coupling = f64x4::splat(self.coupling());
+        let spacing = f64x4::splat(self.lattice().spacing());
         let a4 = spacing * spacing * spacing * spacing;
-        let div_a = f64x8::splat(1.0) / spacing;
+        let div_a = f64x4::splat(1.0) / spacing;
         let dims = self.lattice().dimensions();
 
         // Compute action for red sites
@@ -403,19 +401,16 @@ impl System {
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-                const TWO: usizex8 = usizex8::splat(2);
+                let site_vals = f64x4::from_slice(chunk);
+                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
 
-                let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x8::splat(0.0);
+                let mut der_sum = f64x4::splat(0.0);
                 for i in 0..4 {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x8::gather_or_default(black_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x8::gather_or_default(black_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = f64x4::gather_or_default(black_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = f64x4::gather_or_default(black_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -423,8 +418,8 @@ impl System {
                     der_sum += f1_sqrt * f1_sqrt;
                 }
 
-                const HALF: f64x8 = f64x8::splat(0.5);
-                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+                const HALF: f64x4 = f64x4::splat(0.5);
+                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -436,7 +431,7 @@ impl System {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x8::splat(0.0),
+                || f64x4::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();
@@ -447,19 +442,16 @@ impl System {
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
-                const CTR: usizex8 = usizex8::from_array([0, 1, 2, 3, 4, 5, 6, 7]);
-                const TWO: usizex8 = usizex8::splat(2);
+                let site_vals = f64x4::from_slice(chunk);
+                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
 
-                let site_vals = f64x8::from_slice(chunk);
-                let site_idxs = (usizex8::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x8::splat(0.0);
+                let mut der_sum = f64x4::splat(0.0);
                 for i in 0..4 {
                     let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
                     // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
 
-                    let fneigh_vals = f64x8::gather_or_default(red_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x8::gather_or_default(red_sites, bneigh_idxs / TWO);
+                    let fneigh_vals = f64x4::gather_or_default(red_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = f64x4::gather_or_default(red_sites, bneigh_idxs / TWO);
 
                     let f1_sqrt = (fneigh_vals - site_vals) * div_a;
                     // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
@@ -467,8 +459,8 @@ impl System {
                     der_sum += f1_sqrt * f1_sqrt
                 }
 
-                const HALF: f64x8 = f64x8::splat(0.5);
-                const TFOURTH: f64x8 = f64x8::splat(1.0 / 24.0);
+                const HALF: f64x4 = f64x4::splat(0.5);
+                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
 
                 let site_vals2 = site_vals * site_vals;
                 let site_vals4 = site_vals2 * site_vals2;
@@ -480,7 +472,7 @@ impl System {
                 a4 * (kinetic + mass + inter)
             })
             .reduce(
-                || f64x8::splat(0.0),
+                || f64x4::splat(0.0),
                 |a, b| a + b
             )
             .reduce_sum();
