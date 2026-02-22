@@ -56,7 +56,7 @@ pub struct SweepStats {
     pub stats_time: u128,
 }
 
-impl System {
+impl<const Dim: usize> System<Dim> {
     /// Records statistics on the current sweep.
     pub(crate) fn record_stats(
         &mut self,

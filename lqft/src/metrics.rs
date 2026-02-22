@@ -336,7 +336,7 @@ impl MetricState {
     }
 }
 
-impl System {
+impl<const Dim: usize> System<Dim> {
     pub fn push_metrics(&mut self) {
         let sweep_size = self.lattice().sweep_size();
 

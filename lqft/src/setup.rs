@@ -13,7 +13,7 @@ use crate::observable::{Observable, ObservableRegistry};
 use crate::sim::SystemData;
 use crate::metrics::MetricState;
 
-impl System {
+impl<const Dim: usize> System<Dim> {
     /// Determines whether thermalisation of the system has finished.
     ///
     /// This is done by averaging the action of a block of the last `th_block_size` sweeps
@@ -430,7 +430,7 @@ impl<const Dim: usize> SystemBuilder<Dim> {
     }
 
     /// Creates the simulation using the given options.
-    pub fn build(self) -> anyhow::Result<System> {
+    pub fn build(self) -> anyhow::Result<System<Dim>> {
         tracing::info!("Finished configuration, building simulation...");
 
         if let LatticeDesc::Create(desc) = &self.lattice_desc {

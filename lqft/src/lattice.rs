@@ -353,7 +353,7 @@ impl<const Dim: usize> Lattice<Dim> {
     pub fn to_index(&self, coords: [usize; Dim]) -> usize {
         let mut mult = 1;
         let mut idx = 0;
-        for d in Dim..0 {
+        for d in (0..Dim).rev() {
             idx += coords[d] * mult;            
             mult *= self.dimensions[d];
         }
@@ -365,16 +365,26 @@ impl<const Dim: usize> Lattice<Dim> {
 
     /// Converts a lattice index to a coordinate
     pub fn from_index(&self, i: usize) -> [usize; Dim] {
-        let mut coord = [0; Dim];
+        // let mut coord = [0; Dim];
 
+        // let mut rem = i;
+        // for d in (0..Dim).rev() {
+        //     let comp = rem % self.dimensions[d] / self.dimensions.get(d + 1).copied().unwrap_or(1);
+        //     rem = (rem - comp) / self.dimensions[d];
+        //     coord[d] = comp;
+        // }
+
+        // coord
+
+        let mut coords = [0; Dim];
         let mut rem = i;
-        for d in Dim..0 {
-            let comp = rem % self.dimensions[d] / self.dimensions.get(d + 1).copied().unwrap_or(0);
-            rem = (rem - comp) / self.dimensions[d];
-            coord[d] = comp;
+
+        for i in (0..Dim).rev() {
+            coords[i] = rem % self.dimensions[i];
+            rem /= self.dimensions[i];
         }
 
-        coord
+        coords
 
         // let [_, sx, sy, sz] = self.dimensions;
         // let z = i % sz;
@@ -426,7 +436,7 @@ mod tests {
             let coords = lattice.from_index(i);
             let idx = lattice.to_index(coords);
 
-            println!("{coords:?}");
+            println!("coords {coords:?}, idx: {idx}");
             assert_eq!(
                 i, idx,
                 "Conversion between indices and coordinates is incorrect!"

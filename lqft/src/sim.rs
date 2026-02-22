@@ -71,35 +71,34 @@ pub struct System<const LatticeDim: usize> {
 }
 
 #[inline(always)]
-fn to_coord(idx: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
-    let sx = usizex4::splat(dims[1]);
-    let sy = usizex4::splat(dims[2]);
-    let sz = usizex4::splat(dims[3]);
+fn to_coord<const Dim: usize>(idx: usizex4, dims: [usize; Dim]) -> [usizex4; Dim] {
+    let mut coords = [usizex4::splat(0); Dim];
+    let mut rem = idx;
 
-    let z = idx % sz;
+    for i in (0..Dim).rev() {
+        let dim = usizex4::splat(dims[i]);
 
-    let rem = (idx - z) / sz;
-    let y = rem % sy;
+        coords[i] = rem % dim;
+        rem /= dim;
+    }
 
-    let rem = (rem - y) / sy;
-    let x = rem % sx;
-
-    let t = (rem - x) / sx;
-
-    [t, x, y, z]
+    coords
 }
 
 #[inline(always)]
-fn to_index(c: [usizex4; 4], dims: [usize; 4]) -> usizex4 {
-    let sx = usizex4::splat(dims[1]);
-    let sy = usizex4::splat(dims[2]);
-    let sz = usizex4::splat(dims[3]);
+fn to_index<const Dim: usize>(c: [usizex4; Dim], dims: [usize; Dim]) -> usizex4 {
+    let mut mult = usizex4::splat(1);
+    let mut idx = usizex4::splat(0);
+    for d in (0..Dim).rev() {
+        idx += c[d] * mult;            
+        mult *= usizex4::splat(dims[d]);
+    }
 
-    (c[0] * sx * sy * sz) + (c[1] * sy * sz) + (c[2] * sz) + c[3]
+    idx
 }
 
 #[inline(always)]
-fn find_fneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
+fn find_fneighbors<const Dim: usize>(site_idx: usizex4, dims: [usize; Dim], dir: usize) -> usizex4 {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
@@ -112,7 +111,7 @@ fn find_fneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
 }
 
 #[inline(always)]
-fn find_bneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
+fn find_bneighbors<const Dim: usize>(site_idx: usizex4, dims: [usize; Dim], dir: usize) -> usizex4 {
     let coords = to_coord(site_idx, dims);
     let mut new = coords;
 
@@ -125,11 +124,11 @@ fn find_bneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
 }
 
 
-impl System {
+impl<const Dim: usize> System<Dim> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
-        rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; 4],
+        rng: &mut R, idx: usize, chunk: &mut [f64], neigh_sites: &[f64], dimensions: [usize; Dim],
         spacing: f64, step_size: f64, mass_squared: f64, coupling: f64
     ) -> u64 {
         let curr_vals = f64x4::from_slice(chunk);
@@ -184,7 +183,7 @@ impl System {
             }
 
             const HALF: f64x4 = f64x4::splat(0.5);
-            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);;
+            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
 
             let msquared = f64x4::splat(mass_squared);
             let coupling = f64x4::splat(coupling);
@@ -362,15 +361,15 @@ impl System {
 
     /// Obtains the latest measurements of the given observable.
     #[inline]
-    pub fn measured<O: Observable>(&self) -> Option<f64> {
+    pub fn measured<O: Observable<Dim>>(&self) -> Option<f64> {
         self.observables.measured::<O>()
     }
 
-    pub fn observables(&self) -> &ObservableRegistry {
+    pub fn observables(&self) -> &ObservableRegistry<Dim> {
         &self.observables
     }
 
-    pub fn observables_mut(&mut self) -> &mut ObservableRegistry {
+    pub fn observables_mut(&mut self) -> &mut ObservableRegistry<Dim> {
         &mut self.observables
     }
 
@@ -478,22 +477,23 @@ impl System {
     }
 
     fn get_timeslice(&mut self) -> Vec<f64> {
+        todo!()
         // Compute the spatial sum for every time slice
-        let st = self.data.lattice.dim_t();
+        // let st = self.data.lattice.dim_t();
 
-        let mut sum_t = vec![0.0; st];
-        // for i in 0..self.data.lattice.sweep_size() {
-        //     let t = self.data.lattice.from_index(i)[0];
-        //     let val = unsafe { *self.data.lattice[i].get() };
-        //     sum_t[t] += val;
-        // }
+        // let mut sum_t = vec![0.0; st];
+        // // for i in 0..self.data.lattice.sweep_size() {
+        // //     let t = self.data.lattice.from_index(i)[0];
+        // //     let val = unsafe { *self.data.lattice[i].get() };
+        // //     sum_t[t] += val;
+        // // }
 
-        sum_t
+        // sum_t
     }
 }
 
 /// Getters and setters
-impl System {
+impl<const Dim: usize> System<Dim> {
     /// The current statistics of the simulation.
     pub fn stats(&self) -> &SystemStats {
         &self.data.stats
@@ -532,7 +532,7 @@ impl System {
     }
 
     /// The internal lattice used for data storage.
-    pub fn lattice(&self) -> &Lattice {
+    pub fn lattice(&self) -> &Lattice<Dim> {
         &self.data.lattice
     }
 
