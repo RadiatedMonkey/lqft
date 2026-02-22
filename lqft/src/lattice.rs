@@ -19,7 +19,6 @@ pub struct Lattice {
     iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
-    adjacency: Vec<AdjacentIndices>,
 
     pub(crate) red_sites: Vec<f64>,
     pub(crate) black_sites: Vec<f64>
@@ -320,16 +319,12 @@ impl Lattice {
         let red_sites = vec![fill_value; count];
         let black_sites = vec![fill_value; count];
 
-        let mut lattice = Self {
+        Self {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions,
-            adjacency: Vec::new(),
-        };
-        lattice.generate_adjacency();
-
-        lattice
+            dimensions
+        }
     }
 
     /// Fills the data with zeroes.
@@ -355,16 +350,12 @@ impl Lattice {
             .map(|_| rng.random_range(range.clone()))
             .collect::<Vec<_>>();
 
-        let mut lattice = Self {
+        Self {
             iter_method,
             red_sites, black_sites,
             spacing,
-            dimensions,
-            adjacency: Vec::new(),
-        };
-        lattice.generate_adjacency();
-
-        lattice
+            dimensions
+        }
     }
 
     /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.

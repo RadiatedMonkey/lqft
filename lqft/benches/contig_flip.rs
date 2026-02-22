@@ -2,7 +2,7 @@
 
 use std::cell::UnsafeCell;
 use std::hint::black_box;
-use std::simd::{f64x4, f64x4, u64x8, Select, Simd, StdFloat, ToBytes};
+use std::simd::{f64x4, Select, Simd, StdFloat, ToBytes};
 use std::simd::cmp::SimdPartialOrd;
 use std::simd::num::SimdFloat;
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -267,7 +267,7 @@ fn gen_random_interior_vec(len: usize) -> Vec<UnsafeCell<f64>> {
 
 const DIMS: [usize; 4] = [80, 40, 40, 40];
 const TOTAL: usize = DIMS[0] * DIMS[1] * DIMS[2] * DIMS[3];
-const LANES: usize = 8;
+const LANES: usize = 4;
 
 fn to_index([t, x, y, z]: [usize; 4]) -> usize {
     (t * DIMS[1] * DIMS[2] * DIMS[3]) + (x * DIMS[2] * DIMS[3]) + (y * DIMS[3]) + z
