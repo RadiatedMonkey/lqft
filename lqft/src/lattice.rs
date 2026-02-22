@@ -7,9 +7,11 @@ use rand::{Rng, RngExt};
 use std::cell::UnsafeCell;
 use std::ops::{Deref, Index};
 use std::ops::Range;
+use std::simd::{f64x4, usizex4};
 use std::str::FromStr;
 
 use rayon::prelude::*;
+use crate::sim::Color;
 
 /// 2 adjacent indices in each dimension.
 type AdjacentIndices = [usize; 8];
@@ -19,7 +21,6 @@ pub struct Lattice {
     iter_method: LatticeIterMethod,
     spacing: f64,
     dimensions: [usize; 4],
-    adjacency: Vec<AdjacentIndices>,
 
     pub(crate) red_sites: Vec<f64>,
     pub(crate) black_sites: Vec<f64>
@@ -27,6 +28,12 @@ pub struct Lattice {
 
 unsafe impl Send for Lattice {}
 unsafe impl Sync for Lattice {}
+
+/// Computes the amount of ghost cells required for a lattice of the specified size.
+fn ghost_padding_size(dims: [usize; 4]) -> usize {
+    let [st, sx, sy, sz] = dims;
+    (st + 2) * (sx + 2) * (sy + 2) * (sz + 2) - st * sx * sy * sz
+}
 
 impl Lattice {
     pub fn new(desc: LatticeCreateDesc, iter_method: LatticeIterMethod) -> Self {
@@ -174,7 +181,7 @@ impl Lattice {
             for x in 0..sx {
                 for y in 0..sy {
                     for z in 0..sz {
-                        let index = self.to_index([t, x, y, z]);
+                        let index = self.to_index_single([t, x, y, z]);
                         if (t + x + y + z) % 2 == 0 {
                             red.push(index);
                         } else {
@@ -190,28 +197,217 @@ impl Lattice {
         (red, black)
     }
 
-    /// Generates an adjacency table for the specified lattice.
-    fn generate_adjacency(&mut self) -> Vec<AdjacentIndices> {
-        let total_indices = self.sweep_size();
-        let mut table = Vec::with_capacity(total_indices);
+    /// Fills the data with a fixed value.
+    pub fn filled(dims: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
+        let ghost_padding = ghost_padding_size(dims);
+        let count = (dims.iter().product::<usize>() + ghost_padding).div_ceil(2);
+        let red_sites = vec![fill_value; count];
+        let black_sites = vec![fill_value; count];
 
-        for i in 0..total_indices {
-            let mut neighbors = [0; 8];
+        Self {
+            iter_method,
+            red_sites, black_sites,
+            spacing,
+            dimensions: dims
+        }
+    }
 
-            for j in 0..4 {
-                let fneigh = self.get_forward_neighbor(i, j);
-                let fneigh_index = self.to_index(fneigh);
-                neighbors[2 * j] = fneigh_index;
+    /// Fills the data with zeroes.
+    #[inline]
+    pub fn zeroed(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod) -> Self {
+        Self::filled(dimensions, spacing, iter_method, 0.0)
+    }
 
-                let bneigh = self.get_backward_neighbor(i, j);
-                let bneigh_index = self.to_index(bneigh);
-                neighbors[2 * j + 1] = bneigh_index;
-            }
+    /// Fills the lattice with random data from a range.
+    pub fn random(dims: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
+        let [t, x, y, z] = dims;
+        tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
 
-            table.push(neighbors);
+        let ghost_padding = ghost_padding_size(dims);
+        let count = (dims.iter().product::<usize>() + ghost_padding).div_ceil(2);
+        let mut rng = rand::rng();
+
+        // Seems like I need to clone `range` because the map function can only capture it once.
+        let red_sites = (0..count)
+            .map(|_| rng.random_range(range.clone()))
+            .collect::<Vec<_>>();
+
+        let black_sites = (0..count)
+            .map(|_| rng.random_range(range.clone()))
+            .collect::<Vec<_>>();
+
+        Self {
+            iter_method,
+            red_sites, black_sites,
+            spacing,
+            dimensions: dims,
+        }
+    }
+
+    /// Loads the forward neighbor.
+    ///
+    /// Note: `C` is the *colour of the site to be loaded, not the current site*.
+    pub fn load_forward_neighbor_single<C: Color>(&self, from: [usize; 4], dir: usize) -> f64 {
+        debug_assert!(from[dir] > 0 && from[dir] < self.dimensions[dir]);
+
+        let mut to = from;
+        to[dir] += 1;
+
+        let idx = self.to_index_single(to) / 2;
+        if C::IS_RED {
+            self.red_sites[idx]
+        } else {
+            self.black_sites[idx]
+        }
+    }
+
+    /// Loads the backward neighbor.
+    ///
+    /// Note: `C` is the *colour of the site to be loaded, not the current site*.
+    pub fn load_backward_neighbor_single<C: Color>(&self, from: [usize; 4], dir: usize) -> f64 {
+        debug_assert!(from[dir] > 0 && from[dir] < self.dimensions[dir]);
+
+        let mut to = from;
+        to[dir] -= 1;
+
+        let idx = self.to_index_single(to) / 2;
+        if C::IS_RED {
+            self.red_sites[idx]
+        } else {
+            self.black_sites[idx]
+        }
+    }
+
+    pub fn load_forward_neighbor_multi(
+        from: [usizex4; 4], dir: usize, sites: &[f64], dims: [usize; 4]
+    ) -> f64x4 {
+        const ONE: usizex4 = usizex4::splat(1);
+        const TWO: usizex4 = usizex4::splat(2);
+
+        let mut to = from;
+        to[dir] += ONE;
+
+        let idxs = Self::to_index_multi(to, dims) / TWO;
+        f64x4::gather_or_default(sites, idxs)
+    }
+
+    pub fn load_backward_neighbor_multi(
+        from: [usizex4; 4], dir: usize, sites: &[f64], dims: [usize; 4]
+    ) -> f64x4 {
+        const ONE: usizex4 = usizex4::splat(1);
+        const TWO: usizex4 = usizex4::splat(2);
+
+        let mut to = from;
+        to[dir] -= ONE;
+
+        let idxs = Self::to_index_multi(to, dims) / TWO;
+        f64x4::gather_or_default(sites, idxs)
+    }
+
+    /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
+    pub fn get_forward_neighbor_naive(&self, orig: usize, dir: usize) -> [usize; 4] {
+        // if !self.adjacency.is_empty() {
+        //     return self.from_index(self.adjacency[orig][dir * 2])
+        // }
+
+        let mut dir_vec = [0; 4];
+        dir_vec[dir] = 1;
+
+        self.get_relative(self.to_coord_single(orig), dir_vec)
+    }
+
+    /// Gets the neighbor in the given backward direction. This implements wrapping of the boundaries.
+    pub fn get_backward_neighbor_naive(&self, orig: usize, dir: usize) -> [usize; 4] {
+        // if !self.adjacency.is_empty() {
+        //     return self.from_index(self.adjacency[orig][dir * 2 + 1])
+        // }
+
+        let mut dir_vec = [0; 4];
+        dir_vec[dir] = -1;
+
+        self.get_relative(self.to_coord_single(orig), dir_vec)
+    }
+
+    /// Gets the coordinates of a site relative to the current one in the given direction. This is necessary to introduce
+    /// wrapping at the boundaries of the lattice.
+    pub fn get_relative(&self, orig: [usize; 4], dir: [isize; 4]) -> [usize; 4] {
+        let mut neighbor = [0; 4];
+        for i in 0..4 {
+            let ni = (orig[i] as isize + dir[i]).rem_euclid(self.dimensions[i] as isize) as usize;
+            neighbor[i] = ni;
         }
 
-        table
+        neighbor
+    }
+
+    pub fn to_coord_multi(i: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
+        let [_, sx, sy, sz] = dims;
+
+        let sx = usizex4::splat(sx);
+        let sy = usizex4::splat(sy);
+        let sz = usizex4::splat(sz);
+
+        // debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
+        // debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
+        // debug_assert!(y < sy, "y coordinate out of range: {t} > {sy}");
+        // debug_assert!(z < sz, "z coordinate out of range: {t} > {sz}");
+
+        let z = i % sz;
+
+        let rem = (i - z) / sz;
+        let y = rem % sy;
+
+        let rem = (rem - y) / sy;
+        let x = rem % sx;
+
+        let t = (rem - x) / sx;
+
+        [t, x, y, z]  
+    }
+
+    pub fn to_index_multi(coords: [usizex4; 4], dims: [usize; 4]) -> usizex4 {
+        let [t, x, y, z] = coords;
+        let [_, sx, sy, sz] = dims;
+
+        let sx = usizex4::splat(sx);
+        let sy = usizex4::splat(sy);
+        let sz = usizex4::splat(sz);
+
+        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
+    }
+
+    /// Converts a lattice coordinate to an index.
+    /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
+    pub fn to_index_single(&self, [t, x, y, z]: [usize; 4]) -> usize {
+        let [st, sx, sy, sz] = self.dimensions;
+
+        debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
+        debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
+        debug_assert!(y < sy, "y coordinate out of range: {t} > {sy}");
+        debug_assert!(z < sz, "z coordinate out of range: {t} > {sz}");
+
+        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
+    }
+
+    /// Converts a lattice index to a coordinate
+    pub fn to_coord_single(&self, i: usize) -> [usize; 4] {
+        let [_, sx, sy, sz] = self.dimensions;
+        let z = i % sz;
+
+        let rem = (i - z) / sz;
+        let y = rem % sy;
+
+        let rem = (rem - y) / sy;
+        let x = rem % sx;
+
+        let t = (rem - x) / sx;
+
+        [t, x, y, z]
+    }
+
+    #[inline]
+    fn is_red(&self, coord: [usize; 4]) -> bool {
+        coord.iter().sum::<usize>() % 2 == 0
     }
 
     pub fn spacing(&self) -> f64 {
@@ -313,146 +509,7 @@ impl Lattice {
         let mean = self.mean_par();
         self.meansq_par() - mean * mean
     }
-
-    /// Fills the data with a fixed value.
-    pub fn filled(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, fill_value: f64) -> Self {
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
-        let red_sites = vec![fill_value; count];
-        let black_sites = vec![fill_value; count];
-
-        let mut lattice = Self {
-            iter_method,
-            red_sites, black_sites,
-            spacing,
-            dimensions,
-            adjacency: Vec::new(),
-        };
-        lattice.generate_adjacency();
-
-        lattice
-    }
-
-    /// Fills the data with zeroes.
-    #[inline]
-    pub fn zeroed(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod) -> Self {
-        Self::filled(dimensions, spacing, iter_method, 0.0)
-    }
-
-    /// Fills the lattice with random data from a range.
-    pub fn random(dimensions: [usize; 4], spacing: f64, iter_method: LatticeIterMethod, range: Range<f64>) -> Self {
-        let [t, x, y, z] = dimensions;
-        tracing::debug!("Generating random scalar lattice of dimensions {t} x {x} x {y} x {z}...");
-
-        let count = dimensions.iter().product::<usize>().div_ceil(2);
-        let mut rng = rand::rng();
-
-        // Seems like I need to clone `range` because the map function can only capture it once.
-        let red_sites = (0..count)
-            .map(|_| rng.random_range(range.clone()))
-            .collect::<Vec<_>>();
-
-        let black_sites = (0..count)
-            .map(|_| rng.random_range(range.clone()))
-            .collect::<Vec<_>>();
-
-        let mut lattice = Self {
-            iter_method,
-            red_sites, black_sites,
-            spacing,
-            dimensions,
-            adjacency: Vec::new(),
-        };
-        lattice.generate_adjacency();
-
-        lattice
-    }
-
-    /// Gets the neighbor in the given forward direction. This implements wrapping of the boundaries.
-    pub fn get_forward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
-        // if !self.adjacency.is_empty() {
-        //     return self.from_index(self.adjacency[orig][dir * 2])
-        // }
-
-        let mut dir_vec = [0; 4];
-        dir_vec[dir] = 1;
-
-        self.get_relative(self.from_index(orig), dir_vec)
-    }
-
-    /// Gets the neighbor in the given backward direction. This implements wrapping of the boundaries.
-    pub fn get_backward_neighbor(&self, orig: usize, dir: usize) -> [usize; 4] {
-        // if !self.adjacency.is_empty() {
-        //     return self.from_index(self.adjacency[orig][dir * 2 + 1])
-        // }
-
-        let mut dir_vec = [0; 4];
-        dir_vec[dir] = -1;
-
-        self.get_relative(self.from_index(orig), dir_vec)
-    }
-
-    /// Gets the coordinates of a site relative to the current one in the given direction. This is necessary to introduce
-    /// wrapping at the boundaries of the lattice.
-    pub fn get_relative(&self, orig: [usize; 4], dir: [isize; 4]) -> [usize; 4] {
-        let mut neighbor = [0; 4];
-        for i in 0..4 {
-            let ni = (orig[i] as isize + dir[i]).rem_euclid(self.dimensions[i] as isize) as usize;
-            neighbor[i] = ni;
-        }
-
-        neighbor
-    }
-
-    /// Converts a lattice coordinate to an index.
-    /// Periodic boundary conditions are imposed, i.e. the coordinates wrap around.
-    pub fn to_index(&self, [t, x, y, z]: [usize; 4]) -> usize {
-        let [st, sx, sy, sz] = self.dimensions;
-
-        debug_assert!(t < st, "t coordinate out of range: {t} > {st}");
-        debug_assert!(x < sx, "x coordinate out of range: {t} > {sx}");
-        debug_assert!(y < sy, "y coordinate out of range: {t} > {sy}");
-        debug_assert!(z < sz, "z coordinate out of range: {t} > {sz}");
-
-        (t * sx * sy * sz) + (x * sy * sz) + (y * sz) + z
-    }
-
-    /// Converts a lattice index to a coordinate
-    pub fn from_index(&self, i: usize) -> [usize; 4] {
-        let [_, sx, sy, sz] = self.dimensions;
-        let z = i % sz;
-
-        let rem = (i - z) / sz;
-        let y = rem % sy;
-
-        let rem = (rem - y) / sy;
-        let x = rem % sx;
-
-        let t = (rem - x) / sx;
-
-        [t, x, y, z]
-    }
-
-    #[inline]
-    fn is_red(&self, coord: [usize; 4]) -> bool {
-        coord.iter().sum::<usize>() % 2 == 0
-    }
 }
-
-// impl Index<usize> for Lattice {
-//     type Output = UnsafeCell<f64>;
-//
-//     fn index(&self, i: usize) -> &Self::Output {
-//         &self.sites[i]
-//     }
-// }
-//
-// impl Index<[usize; 4]> for Lattice {
-//     type Output = UnsafeCell<f64>;
-//
-//     fn index(&self, pos: [usize; 4]) -> &Self::Output {
-//         &self.sites[self.to_index(pos)]
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -465,8 +522,8 @@ mod tests {
         let lattice = Lattice::zeroed(dimensions, 1.0, LatticeIterMethod::Sequential);
 
         for i in 0..dimensions.iter().product() {
-            let coords = lattice.from_index(i);
-            let idx = lattice.to_index(coords);
+            let coords = lattice.to_coord_single(i);
+            let idx = lattice.to_index_single(coords);
 
             println!("{coords:?}");
             assert_eq!(
