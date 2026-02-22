@@ -8,6 +8,7 @@ mod snapshot;
 mod stats;
 mod metrics;
 mod observable_impl;
+pub mod util;
 
 use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
 use std::process::ExitCode;
@@ -61,6 +62,8 @@ async fn app() -> anyhow::Result<()> {
 
     tokio::spawn(task);
 
+    rayon::ThreadPoolBuilder::new().num_threads(4).build_global().unwrap();
+
     let mut sim = SystemBuilder::new()
         .with_params(ParamDesc {
             mass_squared: -1.0,
@@ -73,7 +76,7 @@ async fn app() -> anyhow::Result<()> {
         //     flush_method: FlushMethod::Sequential,
         // })
         .with_lattice(LatticeDesc::Create(LatticeCreateDesc {
-            dimensions: [40, 20, 20, 20],
+            dimensions: [100, 50],
             initial_state: InitialState::RandomRange(-0.1..0.1),
             spacing: 1.0,
         }))
@@ -97,7 +100,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50_000;
+    let total_sweeps = 500_000;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;
