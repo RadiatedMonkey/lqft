@@ -10,7 +10,7 @@ mod metrics;
 mod observable_impl;
 
 use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
-use std::process::ExitCode;
+use std::{process::ExitCode, time::Instant};
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -59,6 +59,8 @@ async fn app() -> anyhow::Result<()> {
         .with(layer)
         .init();
 
+    rayon::ThreadPoolBuilder::new().num_threads(12).build_global().unwrap();
+
     tokio::spawn(task);
 
     let mut sim = SystemBuilder::new()
@@ -97,8 +99,12 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50_000;
+    let total_sweeps = 2_000;
+    let start = Instant::now();
     sim.simulate_checkerboard(total_sweeps)?;
+    let end = start.elapsed().as_millis();
+
+    println!("elapsed: {end}");
 
     // visual::plot_lattice(1, sim.lattice())?;
 
