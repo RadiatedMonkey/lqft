@@ -11,20 +11,24 @@ This project currently requires nightly Rust to build due to usage of the [`port
 - Configurable floating point precision and SIMD lane count.
 - Custom initial lattice states: load from an HDF5 snapshot, perform a cold start or generate a random hot start.
 - Easily programmable observable measurements.
+- Prometheus metrics and Loki logs support for Grafana visualisation (as shown below)
+
+<img width="2541" height="889" alt="grafana1" src="https://github.com/user-attachments/assets/ccff850e-82ea-4048-bc22-fdbcdd2f7a62" />
+<img width="2556" height="777" alt="grafana2" src="https://github.com/user-attachments/assets/b7f543a0-d245-43c8-a185-2c9a36976b08" />
 
 ### Method
 Currently only scalar $\phi^4$ theory is supported. The used action is the Euclidean discretised version of the $\phi^4$ action
-$$
+```math
 	S = \int \mathrm{d}^4 x \,\left(\frac{1}{2}\partial^\mu \phi \partial_\mu \phi - \frac{1}{2}m^2 \phi^2 - \frac{\lambda}{4!}\phi^4\right)
-$$
+```
 which is 
-$$
+```math
 		S = a^4 \sum_n \left[\frac{1}{2} \sum_{\mu = 1}^4 \left(\frac{\phi_{n + a \hat{\mu}} - \phi_n}{a}\right)^2 + \frac{1}{2}m^2 \phi_n^2 + \frac{\lambda}{4!} \phi_n^4\right]
-$$
+```
 Every sweep (a full iteration over the entire lattice), the system first iterates over all the even (red) sites and then over the odd (black sites). The currently selected site gets assigned a random new value and the change in action is computed. This new value is then accepted with a probability
-$$
+```math
 	P = \mathrm{min}(1, e^{-\Delta S})
-$$
+```
 
 ### Tech setup
 The simulation loop has been optimised with AVX-256 SIMD instructions and a multi-threaded iterator. Optimising the data layout for cache locality and adding vectorised instructions reduced the sweep time of a 40 x 20 x 20 x 20 double-valued lattice down from around 15 ms to 3 ms on my Ryzen 5 3600.
