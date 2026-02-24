@@ -329,7 +329,7 @@ pub struct ParamDesc {
     /// The coupling constant of the theory.
     pub coupling: f64,
     /// The squared mass of the field.
-    pub mass_squared: f64,
+    pub mass_squared: f64
 }
 
 impl Default for ParamDesc {
@@ -493,7 +493,9 @@ impl SystemBuilder {
             correlation_slices: Vec::new(),
             measurement_interval: 50,
             stats: SystemStats::default(),
-            successful_therm_checks: 0
+            successful_therm_checks: 0,
+
+            autocorrelation_samples: Vec::new()
         };
 
         let mut sim = System {

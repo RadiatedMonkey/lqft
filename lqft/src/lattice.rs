@@ -1,18 +1,12 @@
-use crate::setup::{InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
+use crate::setup::{InitialState, LatticeCreateDesc, LatticeIterMethod, LatticeLoadDesc, SnapshotLocation};
 use anyhow::Context;
 use hdf5_metno as hdf5;
-use ndarray::{Array4, Array5, ArrayView4, ArrayView5};
-use num_traits::Pow;
-use rand::{Rng, RngExt};
-use std::cell::UnsafeCell;
-use std::ops::{Deref, Index};
+use ndarray::{Array5, ArrayView4};
+use rand::{RngExt};
 use std::ops::Range;
 use std::str::FromStr;
 
 use rayon::prelude::*;
-
-/// 2 adjacent indices in each dimension.
-type AdjacentIndices = [usize; 8];
 
 #[derive(Clone)]
 pub struct Lattice {
@@ -118,12 +112,14 @@ impl Lattice {
         self.iter_method
     }
 
-    pub fn from_view(view: ArrayView4<f64>, spacing: f64, iter_method: LatticeIterMethod) -> Self {
-        let dimensions: (usize, usize, usize, usize) = view.dim();
+    pub fn from_view(_view: ArrayView4<f64>, _spacing: f64, _iter_method: LatticeIterMethod) -> Self {
+        todo!();
 
-        let count = view.len().div_ceil(2);
-        let mut red_sites = vec![0.0; count];
-        let mut black_sites = vec![0.0; count];
+        // let dimensions: (usize, usize, usize, usize) = view.dim();
+
+        // let count = view.len().div_ceil(2);
+        // let mut red_sites = vec![0.0; count];
+        // let mut black_sites = vec![0.0; count];
 
         // for t in 0..dimensions.0 {
         //     for x in 0..dimensions.1 {
@@ -139,7 +135,6 @@ impl Lattice {
         //         }
         //     }
         // }
-        todo!();
 
         // let mut lattice = Lattice {
         //     iter_method,
@@ -187,30 +182,6 @@ impl Lattice {
         tracing::debug!("Checkerboard generated!");
 
         (red, black)
-    }
-
-    /// Generates an adjacency table for the specified lattice.
-    fn generate_adjacency(&mut self) -> Vec<AdjacentIndices> {
-        let total_indices = self.sweep_size();
-        let mut table = Vec::with_capacity(total_indices);
-
-        for i in 0..total_indices {
-            let mut neighbors = [0; 8];
-
-            for j in 0..4 {
-                let fneigh = self.get_forward_neighbor(i, j);
-                let fneigh_index = self.to_index(fneigh);
-                neighbors[2 * j] = fneigh_index;
-
-                let bneigh = self.get_backward_neighbor(i, j);
-                let bneigh_index = self.to_index(bneigh);
-                neighbors[2 * j + 1] = bneigh_index;
-            }
-
-            table.push(neighbors);
-        }
-
-        table
     }
 
     pub fn spacing(&self) -> f64 {

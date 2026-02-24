@@ -2,7 +2,6 @@ use crate::lattice::Lattice;
 use crate::setup::{FlushMethod, SnapshotDesc, SnapshotType};
 use crate::stats::SweepStats;
 use hdf5_metno as hdf5;
-use ndarray::{Array5, ArrayView4, ArrayView5, Axis};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
@@ -44,7 +43,7 @@ impl SnapshotState {
         Ok(())
     }
 
-    fn sequential_job(desc: JobDesc) {
+    fn sequential_job(_desc: JobDesc) {
         // tracing::info!("Initialised sequential snapshot flush thread");
         //
         // let JobDesc {
@@ -87,7 +86,7 @@ impl SnapshotState {
         todo!();
     }
 
-    fn batch_job(desc: JobDesc, batch_size: usize) {
+    fn batch_job(_desc: JobDesc, _batch_size: usize) {
         // tracing::info!("Initialised snapshot batch flush thread");
         //
         // let JobDesc {

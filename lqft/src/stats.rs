@@ -1,8 +1,7 @@
 use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
-use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
@@ -99,7 +98,7 @@ impl System {
                     tracing::info!("Last sweep avg is: {}", self.data.lattice.mean_seq());
                 }
 
-                let clone = unsafe { self.data.lattice.clone() };
+                let clone = self.data.lattice.clone();
 
                 let stats_time = stat_timer.elapsed().as_millis();
                 let sweep = SweepStats {

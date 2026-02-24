@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use crate::sim::System;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{Ordering};
 
 // pub fn plot_lattice(index: usize, lattice: &Lattice) -> anyhow::Result<()> {
 //     let filename = format!("plots/step-{index}.png");
@@ -234,8 +233,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //     Ok(())
 // }
 
-use prometheus::Encoder;
-use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
 use crate::all_public_in;
 use crate::observable_impl::{MeanValue, Variance};
@@ -307,9 +304,6 @@ impl MetricState {
         let sweep_size = ps::register_int_counter!("sweep_size", "Sweep size")?;
 
         let runtime = ps::register_gauge!("run_time", "Run time")?;
-
-        let running = Arc::new(AtomicBool::new(true));
-        let clone = Arc::clone(&running);
 
         let addr: SocketAddr = "127.0.0.1:9184".parse()?;
         prometheus_exporter::start(addr).expect("Failed to start Prometheus exporter");

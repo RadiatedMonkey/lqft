@@ -4,15 +4,15 @@ use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
 use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
-use num_traits::Pow;
+use num_traits::Zero;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
-use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
+use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
-use std::ops::{Div, Range};
+use realfft::RealFftPlanner;
+use rustfft::FftPlannerAvx;
+use rustfft::num_complex::Complex;
 use std::simd::num::SimdFloat;
-use std::simd::{f64x4, u64x8, usizex4, Select, Simd, StdFloat};
+use std::simd::{f64x4, usizex4, Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool};
@@ -27,7 +27,7 @@ const CTR: usizex4 = usizex4::from_array([0, 1, 2, 3]);
 const TWO: usizex4 = usizex4::splat(2);
 
 /// Simulation settings that should be saved to the archive.
-#[derive(H5Type, Serialize, Deserialize)]
+#[derive(H5Type)]
 #[repr(C)]
 pub struct SystemSettings {
     pub spacing: f64,
@@ -59,7 +59,9 @@ pub struct SystemData {
     pub measurement_interval: usize,
     pub current_step_size: AtomicF64,
     pub stats: SystemStats,
-    pub successful_therm_checks: usize
+    pub successful_therm_checks: usize,
+
+    pub autocorrelation_samples: Vec<f64>
 }
 
 all_public_in!(
@@ -187,7 +189,7 @@ impl System {
             }
 
             const HALF: f64x4 = f64x4::splat(0.5);
-            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);;
+            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
 
             let msquared = f64x4::splat(mass_squared);
             let coupling = f64x4::splat(coupling);
@@ -260,7 +262,6 @@ impl System {
 
             let step_size = self.current_step_size();
 
-            let action = &mut self.data.stats.current_action;
             let accepted_moves = &self.data.stats.accepted_moves;
             let total_moves = &self.data.stats.total_moves;
 
@@ -337,8 +338,39 @@ impl System {
                 }
             }
 
+            const AUTOCOR_SAMPLE_SIZE: usize = 50;
+
             if self.data.stats.thermalised_at.is_none() {
                 self.correct_step_size();
+            } else {
+                // Store samples to estimate autocorrelation time.
+                // self.data.autocorrelation_samples.push(self.lattice().mean());
+                self.data.autocorrelation_samples.push(self.compute_full_action());
+            }
+
+            if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
+                // Estimate autocorrelation time
+                let series_mean = self.data.autocorrelation_samples.iter().sum::<f64>() / AUTOCOR_SAMPLE_SIZE as f64;
+                let mut series = self.data.autocorrelation_samples.iter().map(|m| m - series_mean).collect::<Vec<_>>();
+                series.resize(2 * series.len(), 0.0);
+
+                let mut planner = RealFftPlanner::<f64>::new();
+                let fft = planner.plan_fft_forward(series.len());
+
+                let mut freq = fft.make_output_vec();
+                fft.process(&mut series, &mut freq).unwrap();
+
+                freq.iter_mut().for_each(|s| *s = *s * s.conj());
+
+                let inv_fft = planner.plan_fft_inverse(series.len());
+                let mut autocov = inv_fft.make_output_vec();
+                inv_fft.process(&mut freq, &mut autocov).unwrap();
+
+                let c0 = autocov[0];
+                let rho: Vec<f64> = autocov[..self.data.autocorrelation_samples.len()].iter().map(|&c| c / c0).collect();
+
+                let tau_int = 0.5 + rho[1..].iter().take_while(|&r| *r > 0.0).sum::<f64>();
+                println!("Autocorrelation time: {tau_int}");
             }
 
             // Record statistics on every sweep.
@@ -478,20 +510,6 @@ impl System {
             .reduce_sum();
 
         action_red + action_black
-    }
-
-    fn get_timeslice(&mut self) -> Vec<f64> {
-        // Compute the spatial sum for every time slice
-        let st = self.data.lattice.dim_t();
-
-        let mut sum_t = vec![0.0; st];
-        // for i in 0..self.data.lattice.sweep_size() {
-        //     let t = self.data.lattice.from_index(i)[0];
-        //     let val = unsafe { *self.data.lattice[i].get() };
-        //     sum_t[t] += val;
-        // }
-
-        sum_t
     }
 }
 

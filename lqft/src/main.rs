@@ -9,7 +9,7 @@ mod stats;
 mod metrics;
 mod observable_impl;
 
-use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
+use crate::setup::{AcceptanceDesc, BurnInDesc, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, ParamDesc, PerformanceDesc, SystemBuilder};
 use std::process::ExitCode;
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
@@ -47,8 +47,6 @@ async fn main() -> ExitCode {
 }
 
 async fn app() -> anyhow::Result<()> {
-    assert!(is_x86_feature_detected!("avx"));
-
     let (layer, task) = tracing_loki::builder()
         .label("application", "lqft")?
         .label("env", "dev")?

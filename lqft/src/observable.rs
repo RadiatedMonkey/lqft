@@ -6,7 +6,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault};
 use nohash_hasher::NoHashHasher;
-use crate::sim::{System, SystemData};
+use crate::sim::SystemData;
 
 pub struct ObservableRegistry {
     map: HashMap<TypeId, Box<dyn ObservableState>, BuildHasherDefault<NoHashHasher<u64>>>,
@@ -35,18 +35,16 @@ impl ObservableRegistry {
     /// Retrieves the state of the given observable.
     pub fn get<O: Observable>(&self) -> Option<&O::State> {
         self.map.get(&TypeId::of::<O>()).map(|boxed| {
-            let any = boxed.as_any();
             boxed.as_any().downcast_ref::<O::State>()
         }).flatten()
     }
 
-    /// Mutably retrieves the state of the given observable.
-    pub fn get_mut<O: Observable>(&mut self) -> Option<&mut O::State> {
-        self.map.get_mut(&TypeId::of::<O>()).map(|boxed| {
-            // boxed.as_any_mut().downcast_mut::<O::State>()
-            todo!()
-        }).flatten()
-    }
+    // /// Mutably retrieves the state of the given observable.
+    // pub fn get_mut<O: Observable>(&mut self) -> Option<&mut O::State> {
+    //     self.map.get_mut(&TypeId::of::<O>()).map(|boxed| {
+    //         boxed.as_any_mut().downcast_mut::<O::State>()
+    //     }).flatten()
+    // }
 
     /// Retrieves the last measured value of the observable.
     pub fn measured<O: Observable>(&self) -> Option<f64> {

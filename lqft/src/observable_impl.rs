@@ -1,10 +1,9 @@
 //! Implementations of basic observables.
 
 use std::any::Any;
-use crate::observable::*;
 
 use crate::observable::{MeasureFrequency, Observable, ObservableState};
-use crate::sim::{System, SystemData};
+use crate::sim::SystemData;
 
 /// Measures the mean of the lattice.
 pub struct MeanValue;
