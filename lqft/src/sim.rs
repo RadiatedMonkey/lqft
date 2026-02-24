@@ -1,26 +1,22 @@
 use crate::lattice::Lattice;
+use crate::observable_impl::MeanValue;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
 use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
-use num_traits::Zero;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
 use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
 use realfft::RealFftPlanner;
-use rustfft::FftPlannerAvx;
-use rustfft::num_complex::Complex;
 use std::simd::num::SimdFloat;
 use std::simd::{f64x4, usizex4, Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool};
 use std::time::Instant;
 use rand::RngExt;
-use crate::observable::{Observable, ObservableRegistry};
+use crate::observable::{Observable, ObservableHList, ObservableStorage};
 use crate::metrics::MetricState;
-use crate::all_public_in;
 
 const LANES: usize = 4;
 const CTR: usizex4 = usizex4::from_array([0, 1, 2, 3]);
@@ -53,10 +49,7 @@ pub struct SystemData {
     pub coupling: f64,
     pub acceptance_desc: AcceptanceDesc,
     pub burn_in_desc: BurnInDesc,
-    /// A vector for every possible C(t)
-    /// where the inner vector is for every sweep
-    pub correlation_slices: Vec<f64>,
-    pub measurement_interval: usize,
+
     pub current_step_size: AtomicF64,
     pub stats: SystemStats,
     pub successful_therm_checks: usize,
@@ -64,16 +57,13 @@ pub struct SystemData {
     pub autocorrelation_samples: Vec<f64>
 }
 
-all_public_in!(
-    super,
-    pub struct System {
-        simulating: AtomicBool,
-        metrics: MetricState,
-        snapshot_state: Option<SnapshotState>,
-        observables: ObservableRegistry,
-        data: SystemData
-    }
-);
+pub struct System<O: ObservableHList> {
+    pub simulating: bool,
+    pub metrics: MetricState,
+    pub snapshot: Option<SnapshotState>,
+    pub observables: ObservableStorage<O>,
+    pub data: SystemData
+}
 
 #[inline(always)]
 fn to_coord(idx: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
@@ -130,7 +120,7 @@ fn find_bneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
 }
 
 
-impl System {
+impl<T: ObservableHList> System<T> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
@@ -235,13 +225,11 @@ impl System {
 
         tracing::debug!("Starting action is: {action}");
 
-        if let Some(state) = &mut self.snapshot_state {
+        if let Some(state) = &mut self.snapshot {
             state.init(self.data.lattice.dimensions(), total_sweeps)?;
         }
 
         self.data.stats.reserve_capacity(total_sweeps);
-        self.data.correlation_slices
-            .resize(self.data.lattice.dimensions()[0], 0.0);
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
@@ -258,7 +246,7 @@ impl System {
             self.data.stats.current_sweep = i;
 
             // First update red sites....
-            self.simulating.store(true, Ordering::SeqCst);
+            self.simulating = true;
 
             let step_size = self.current_step_size();
 
@@ -306,7 +294,7 @@ impl System {
                 }
             );
 
-            self.simulating.store(false, Ordering::SeqCst);
+            self.simulating = false;
 
             let sweep_time = sweep_timer.elapsed();
             sweep_timer = Instant::now();
@@ -338,6 +326,8 @@ impl System {
                 }
             }
 
+            self.observables.observe_all(&self.data);
+
             const AUTOCOR_SAMPLE_SIZE: usize = 50;
 
             if self.data.stats.thermalised_at.is_none() {
@@ -345,7 +335,8 @@ impl System {
             } else {
                 // Store samples to estimate autocorrelation time.
                 // self.data.autocorrelation_samples.push(self.lattice().mean());
-                self.data.autocorrelation_samples.push(self.compute_full_action());
+                self.data.autocorrelation_samples.push(self.observables.measured::<MeanValue>().unwrap_or(0.0));
+                // self.data.autocorrelation_samples.push(self.compute_full_action());
             }
 
             if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
@@ -381,14 +372,10 @@ impl System {
                 total_timer = Instant::now();
             }
 
-            self.observables.measure(&mut self.data);
+            // self.observables.measure(&mut self.data);
         }
-
+        
         self.push_metrics();
-
-        for t in 0..self.data.lattice.dimensions()[0] {
-            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as f64;
-        }
 
         tracing::info!("Run completed");
 
@@ -397,16 +384,12 @@ impl System {
 
     /// Obtains the latest measurements of the given observable.
     #[inline]
-    pub fn measured<O: Observable>(&self) -> Option<f64> {
-        self.observables.measured::<O>()
+    pub fn measured<U: Observable>(&self) -> Option<U::Output> {
+        self.observables.measured::<U>()
     }
 
-    pub fn observables(&self) -> &ObservableRegistry {
+    pub fn observables(&self) -> &ObservableStorage<T> {
         &self.observables
-    }
-
-    pub fn observables_mut(&mut self) -> &mut ObservableRegistry {
-        &mut self.observables
     }
 
     /// Computes the autocorrelation time of the system in its current state.
@@ -511,10 +494,7 @@ impl System {
 
         action_red + action_black
     }
-}
 
-/// Getters and setters
-impl System {
     /// The current statistics of the simulation.
     pub fn stats(&self) -> &SystemStats {
         &self.data.stats
@@ -536,10 +516,6 @@ impl System {
     /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
     pub fn th_block_size(&self) -> usize {
         self.data.burn_in_desc.block_size
-    }
-
-    pub fn correlator2(&self) -> &[f64] {
-        &self.data.correlation_slices
     }
 
     /// The current mass squared.

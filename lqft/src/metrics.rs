@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use crate::sim::System;
+use crate::{observable::ObservableHList, sim::System};
 use std::sync::atomic::{Ordering};
 
 // pub fn plot_lattice(index: usize, lattice: &Lattice) -> anyhow::Result<()> {
@@ -234,7 +234,6 @@ use std::sync::atomic::{Ordering};
 // }
 
 use prometheus_exporter::prometheus as ps;
-use crate::all_public_in;
 use crate::observable_impl::{MeanValue, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
@@ -242,37 +241,34 @@ pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     ctr.inc_by(inc);
 }
 
-all_public_in! {
-    super,
-    pub struct MetricState {
-        total_moves: ps::IntCounter,
-        accepted_moves: ps::IntCounter,
-        accept_ratio: ps::Gauge,
-        progress: ps::Gauge,
+pub struct MetricState {
+    pub total_moves: ps::IntCounter,
+    pub accepted_moves: ps::IntCounter,
+    pub accept_ratio: ps::Gauge,
+    pub progress: ps::Gauge,
 
-        step_size: ps::Gauge,
-        action_density: ps::Gauge,
-        performed_measurements: ps::IntCounter,
+    pub step_size: ps::Gauge,
+    pub action_density: ps::Gauge,
+    pub performed_measurements: ps::IntCounter,
 
-        sweep_time: ps::Gauge,
-        stats_time: ps::Gauge,
-        therm_ratio: ps::Gauge,
-        completed_sweeps: ps::IntCounter,
-        thermalised_at: ps::IntCounter,
+    pub sweep_time: ps::Gauge,
+    pub stats_time: ps::Gauge,
+    pub therm_ratio: ps::Gauge,
+    pub completed_sweeps: ps::IntCounter,
+    pub thermalised_at: ps::IntCounter,
 
-        mean: ps::Gauge,
-        meansq: ps::Gauge,
-        var: ps::Gauge,
+    pub mean: ps::Gauge,
+    pub meansq: ps::Gauge,
+    pub var: ps::Gauge,
 
-        cpu: ps::Gauge,
-        mem: ps::Gauge,
+    pub cpu: ps::Gauge,
+    pub mem: ps::Gauge,
 
-        sys: sysinfo::System,
-        pid: sysinfo::Pid,
-        pid_ctr: ps::IntCounter,
-        runtime: ps::Gauge,
-        sweep_size: ps::IntCounter
-    }
+    pub sys: sysinfo::System,
+    pub pid: sysinfo::Pid,
+    pub pid_ctr: ps::IntCounter,
+    pub runtime: ps::Gauge,
+    pub sweep_size: ps::IntCounter
 }
 
 impl MetricState {
@@ -330,7 +326,7 @@ impl MetricState {
     }
 }
 
-impl System {
+impl<T: ObservableHList> System<T> {
     pub fn push_metrics(&mut self) {
         let sweep_size = self.lattice().sweep_size();
 

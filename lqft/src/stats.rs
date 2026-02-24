@@ -1,3 +1,4 @@
+use crate::observable::ObservableHList;
 use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
@@ -55,7 +56,7 @@ pub struct SweepStats {
     pub stats_time: u128,
 }
 
-impl System {
+impl<T: ObservableHList> System<T> {
     /// Records statistics on the current sweep.
     pub(crate) fn record_stats(
         &mut self,
@@ -85,7 +86,7 @@ impl System {
 
         // Generate snapshot if snapshotting is enabled and an interval is passed *or* this is the
         // last sweep.
-        if let Some(snapshot) = &self.snapshot_state {
+        if let Some(snapshot) = &self.snapshot {
             let should_snapshot = match snapshot.desc.ty {
                 SnapshotType::Checkpoint => sweep == total_sweeps - 1,
                 SnapshotType::Interval(interval) => {

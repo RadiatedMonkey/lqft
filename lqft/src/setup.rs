@@ -9,11 +9,11 @@ use hdf5_metno as hdf5;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
-use crate::observable::{Observable, ObservableRegistry};
+use crate::observable::{Observable, ObservableBuilder, ObservableHList};
 use crate::sim::SystemData;
 use crate::metrics::MetricState;
 
-impl System {
+impl<T: ObservableHList> System<T> {
     /// Determines whether thermalisation of the system has finished.
     ///
     /// This is done by averaging the action of a block of the last `th_block_size` sweeps
@@ -342,9 +342,9 @@ impl Default for ParamDesc {
 }
 
 /// Used to configure a lattice simulation.
-pub struct SystemBuilder {
+pub struct SystemBuilder<Obs: ObservableHList> {
     performance_desc: PerformanceDesc,
-    observables: ObservableRegistry,
+    observables: ObservableBuilder<Obs>,
     param_desc: ParamDesc,
     lattice_desc: LatticeDesc,
     acceptance_desc: AcceptanceDesc,
@@ -352,11 +352,11 @@ pub struct SystemBuilder {
     snapshot: Option<SnapshotDesc>,
 }
 
-impl SystemBuilder {
+impl SystemBuilder<()> {
     /// Creates a new system builder with default configuration.
     pub fn new() -> Self {
         Self {
-            observables: ObservableRegistry::new(),
+            observables: ObservableBuilder::new(),
             snapshot: None,
             lattice_desc: LatticeDesc::Create(LatticeCreateDesc::default()),
             param_desc: ParamDesc::default(),
@@ -365,7 +365,9 @@ impl SystemBuilder {
             performance_desc: PerformanceDesc::default()
         }
     }
+}
 
+impl<T: ObservableHList> SystemBuilder<T> {
     /// Enables snapshots using the given configuration.
     ///
     /// Snapshots are disabled by default.
@@ -384,9 +386,16 @@ impl SystemBuilder {
         self
     }
 
-    pub fn with_observable<O: Observable>(mut self) -> Self {
-        self.observables.register::<O>();
-        self
+    pub fn with_observable<O: Observable>(self) -> SystemBuilder<(T, O)> {
+        SystemBuilder {
+            observables: self.observables.with::<O>(),
+            acceptance_desc: self.acceptance_desc,
+            burn_in_desc: self.burn_in_desc,
+            lattice_desc: self.lattice_desc,
+            param_desc: self.param_desc,
+            performance_desc: self.performance_desc,
+            snapshot: self.snapshot
+        }
     }
 
     /// Sets the configuration for burn in.
@@ -430,7 +439,7 @@ impl SystemBuilder {
     }
 
     /// Creates the simulation using the given options.
-    pub fn build(self) -> anyhow::Result<System> {
+    pub fn build(self) -> anyhow::Result<System<T>> {
         tracing::info!("Finished configuration, building simulation...");
 
         if let LatticeDesc::Create(desc) = &self.lattice_desc {
@@ -490,8 +499,6 @@ impl SystemBuilder {
             current_step_size: AtomicF64::new(self.acceptance_desc.initial_step_size),
             acceptance_desc: self.acceptance_desc,
             burn_in_desc: self.burn_in_desc,
-            correlation_slices: Vec::new(),
-            measurement_interval: 50,
             stats: SystemStats::default(),
             successful_therm_checks: 0,
 
@@ -500,10 +507,10 @@ impl SystemBuilder {
 
         let mut sim = System {
             data,
-            observables: self.observables,
-            simulating: AtomicBool::new(false),
+            observables: self.observables.build(),
+            simulating: false,
             metrics: MetricState::new()?,
-            snapshot_state,
+            snapshot: snapshot_state,
         };
 
         let first_action = sim.compute_full_action();
@@ -518,7 +525,7 @@ impl SystemBuilder {
     }
 }
 
-impl Default for SystemBuilder {
+impl Default for SystemBuilder<()> {
     fn default() -> Self {
         Self::new()
     }

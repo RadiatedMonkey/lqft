@@ -1,120 +1,147 @@
 //! Implements the observable API.
 
-use rayon::prelude::*;
-
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault};
-use nohash_hasher::NoHashHasher;
+use std::marker::PhantomData;
 use crate::sim::SystemData;
 
-pub struct ObservableRegistry {
-    map: HashMap<TypeId, Box<dyn ObservableState>, BuildHasherDefault<NoHashHasher<u64>>>,
+pub trait ObservableHList {
+    fn new() -> Self;
+    fn has<O: Observable>() -> bool;
+    fn observe(&mut self, system: &SystemData);
+    fn measured<O: Observable>(&self) -> Option<O::Output>;
+    fn reserve(&mut self, n: usize);
 }
 
-impl ObservableRegistry {
-    /// Creates a new observable storage.
+impl ObservableHList for () {
+    fn new() -> () {}
+
+    fn has<O: Observable>() -> bool { 
+        false 
+    }
+
+    fn observe(&mut self, _system: &SystemData) {}
+
+    fn measured<O: Observable>(&self) -> Option<O::Output> {
+        panic!("Observable {} is not registered.", O::NAME);
+    }
+
+    fn reserve(&mut self, _n: usize) {}
+}
+
+impl<O1: Observable> ObservableHList for O1 {
+    fn new() -> O1 { <O1 as Observable>::new() }
+
+    fn has<O: Observable>() -> bool { 
+        TypeId::of::<O>() == TypeId::of::<O1>() 
+    }
+
+    fn observe(&mut self, system: &SystemData) {
+        <O1 as Observable>::observe(self, system);
+    }
+
+    fn measured<O: Observable>(&self) -> Option<O::Output> {
+        if !Self::has::<O>() {
+            None
+        } else {
+            let latest = self.latest();
+
+            assert_eq!(TypeId::of::<O1::Output>(), TypeId::of::<O::Output>(), "Measured and requested type are not equal. This is a bug.");
+            
+            let any = latest
+                .as_ref()
+                .map(|x| (x as &dyn Any).downcast_ref::<O::Output>())
+                .flatten();
+
+            any.cloned()
+        }
+    }
+
+    fn reserve(&mut self, n: usize) {
+        <Self as Observable>::reserve(self, n);
+    }
+}
+
+impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
+    fn new() -> (OL, O1) {
+        (OL::new(), <O1 as Observable>::new())
+    }
+
+    fn has<O: Observable>() -> bool { 
+        TypeId::of::<O>() == TypeId::of::<O1>() || OL::has::<O>()
+    }
+
+    fn observe(&mut self, system: &SystemData) {
+        <O1 as Observable>::observe(&mut self.1, system);
+        OL::observe(&mut self.0, system);
+    }
+
+    fn measured<O: Observable>(&self) -> Option<O::Output> {
+        if O1::has::<O>() {
+            O1::measured::<O>(&self.1)
+        } else {
+            OL::measured::<O>(&self.0)
+        }
+    }
+
+    fn reserve(&mut self, n: usize) {
+        <O1 as Observable>::reserve(&mut self.1, n);
+        <OL as ObservableHList>::reserve(&mut self.0, n);
+    }
+}
+
+pub struct ObservableBuilder<Obs: ObservableHList> {
+    _marker: PhantomData<Obs>
+}
+
+impl ObservableBuilder<()> {
     pub fn new() -> Self {
-        Self {
-            map: HashMap::with_hasher(BuildHasherDefault::<NoHashHasher<u64>>::default()),
-        }
-    }
-
-    pub fn measure(&mut self, data: &SystemData) {
-        self.map.par_iter_mut().for_each(|(_k, v)| {
-            if v.should_measure(data) {
-                v.measure(data);
-            }
-        })
-    }
-
-    pub fn register<O: Observable>(&mut self) {
-        self.map.insert(TypeId::of::<O>(), Box::new(O::new_state()));
-    }
-
-    /// Retrieves the state of the given observable.
-    pub fn get<O: Observable>(&self) -> Option<&O::State> {
-        self.map.get(&TypeId::of::<O>()).map(|boxed| {
-            boxed.as_any().downcast_ref::<O::State>()
-        }).flatten()
-    }
-
-    // /// Mutably retrieves the state of the given observable.
-    // pub fn get_mut<O: Observable>(&mut self) -> Option<&mut O::State> {
-    //     self.map.get_mut(&TypeId::of::<O>()).map(|boxed| {
-    //         boxed.as_any_mut().downcast_mut::<O::State>()
-    //     }).flatten()
-    // }
-
-    /// Retrieves the last measured value of the observable.
-    pub fn measured<O: Observable>(&self) -> Option<f64> {
-        let obs = self.get::<O>()?;
-        obs.measured()
+        ObservableBuilder { _marker: PhantomData }
     }
 }
 
-/// When to perform measurements.
-pub enum MeasureFrequency {
-    Once,
-    /// Every `n` autocorrelation times.
-    Autocorrelation(usize),
-    /// Every `n` sweeps.
-    Sweep(usize)
-}
+impl<Obs: ObservableHList> ObservableBuilder<Obs> {
+    pub fn has<O: Observable>(&self) -> bool {
+        Obs::has::<O>()
+    }
 
-// trait AsAny: Any {
-//     fn as_any(&self) -> &dyn Any;
-//     fn as_any_mut(&mut self) -> &mut dyn Any;
-// }
-//
-// impl<T: Any> AsAny for T {
-//     fn as_any(&self) -> &dyn Any { self }
-//     fn as_any_mut(&mut self) -> &mut dyn Any { self }
-// }
-
-/// Information specific to certain measurement types.
-pub trait ObservableState: Send + Sync + 'static {
-    fn as_any(&self) -> &dyn Any;
-
-    /// Approximate frequency of measurements.
-    fn frequency(&self) -> MeasureFrequency;
-    /// Whether this observable requires thermalisation.
-    fn burn_in(&self) -> bool { true }
-
-    /// Makes a new measurement.
-    fn measure(&mut self, data: &SystemData);
-
-    /// Determines whether the observables should be measured.
-    ///
-    /// By default this follows the frequency defined in [`FREQUENCY`](Self::FREQUENCY).
-    fn should_measure(&self, data: &SystemData) -> bool {
-        if self.burn_in() && !data.stats.thermalised_at.is_some() {
-            return false
-        }
-
-        match self.frequency() {
-            MeasureFrequency::Autocorrelation(_) => todo!(),
-            MeasureFrequency::Sweep(n) => data.stats.current_sweep % n == 0,
-            MeasureFrequency::Once => panic!("One-time observables should have a custom `should_measure` implementation")
+    pub fn with<O: Observable>(self) -> ObservableBuilder<(Obs, O)> {
+        ObservableBuilder {
+            _marker: PhantomData
         }
     }
 
-    /// Returns the last measured quantity.
-    fn measured(&self) -> Option<f64>;
+    pub fn build(self) -> ObservableStorage<Obs> {
+        ObservableStorage {
+            storage: Obs::new()
+        }
+    }
+}
 
-    /// Clears the observable's state.
-    fn clear(&mut self);
+pub struct ObservableStorage<Obs> {
+    storage: Obs
+}
 
-    /// Prepares for `n` additional measurements. The number of measurements is an estimate based
-    /// on [`FREQUENCY`](Self::FREQUENCY).
-    fn prepare(&mut self, n: usize);
+impl<Obs: ObservableHList> ObservableStorage<Obs> {
+    pub fn has<O: Observable>(&self) -> bool {
+        Obs::has::<O>()
+    }
+
+    pub fn observe_all(&mut self, data: &SystemData) {
+        self.storage.observe(data);
+    }
+
+    pub fn measured<O: Observable>(&self) -> Option<O::Output> {
+        self.storage.measured::<O>()
+    }
 }
 
 pub trait Observable: 'static {
-    type State: ObservableState;
+    type Output: Clone + 'static;
 
-    /// Name of the observable.
     const NAME: &'static str;
 
-    fn new_state() -> Self::State;
+    fn new() -> Self;
+    fn reserve(&mut self, n: usize);
+    fn observe(&mut self, system: &SystemData);
+    fn latest(&self) -> Option<Self::Output>;
 }

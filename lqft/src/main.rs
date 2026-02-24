@@ -17,25 +17,6 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use crate::observable_impl::{MeanValue, Variance};
 
-/// Makes all struct fields public in the current and specified modules.
-/// This makes it easier to spread implementation details over multiple archive.
-#[macro_export]
-macro_rules! all_public_in {
-    ($module:path, $vis:vis struct $name:ident {
-        $(
-            $(#[$meta:meta])*
-            $field_name:ident: $field_type:ty
-        ),* $(,)?
-    }) => {
-        $vis struct $name {
-            $(
-                $(#[$meta])*
-                pub(in $module) $field_name : $field_type
-            ),*
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     if let Err(err) = app().await {

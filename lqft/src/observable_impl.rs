@@ -1,102 +1,58 @@
 //! Implementations of basic observables.
 
-use std::any::Any;
-
-use crate::observable::{MeasureFrequency, Observable, ObservableState};
+use crate::observable::{Observable};
 use crate::sim::SystemData;
 
 /// Measures the mean of the lattice.
-pub struct MeanValue;
-
-impl Observable for MeanValue {
-    type State = MeanValueState;
-
-    const NAME: &'static str = "mean_value";
-
-    fn new_state() -> Self::State {
-        MeanValueState { data: Vec::new() }
-    }
-}
-
-pub struct MeanValueState {
+pub struct MeanValue {
     data: Vec<f64>
 }
 
-impl ObservableState for MeanValueState {
-    fn as_any(&self) -> &dyn Any {
-        self
+impl Observable for MeanValue {
+    type Output = f64;
+
+    const NAME: &'static str = "mean";
+
+    fn new() -> Self {
+        Self { data: Vec::new() }
     }
 
-    fn frequency(&self) -> MeasureFrequency {
-        MeasureFrequency::Sweep(1)
-    }
-
-    fn burn_in(&self) -> bool {
-        false
-    }
-
-    fn measure(&mut self, data: &SystemData) {
-        let mean = data.lattice.mean_seq();
-        self.data.push(mean);
-    }
-
-    fn measured(&self) -> Option<f64> {
-        self.data.last().copied()
-    }
-
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-
-    fn prepare(&mut self, n: usize) {
+    fn reserve(&mut self, n: usize) {
         self.data.reserve(n);
+    }
+
+    fn observe(&mut self, system: &SystemData) {
+        self.data.push(system.lattice.mean())
+    }
+
+    fn latest(&self) -> Option<f64> {
+        self.data.last().copied()
     }
 }
 
 /// Measures the variance of the lattice.
-pub struct Variance;
-
-impl Observable for Variance {
-    type State = VarianceState;
-
-    const NAME: &'static str = "variance";
-
-    fn new_state() -> Self::State {
-        VarianceState { data: Vec::new() }
-    }
-}
-
-pub struct VarianceState {
+pub struct Variance {
     data: Vec<f64>
 }
 
-impl ObservableState for VarianceState {
-    fn as_any(&self) -> &dyn Any {
-        self
+impl Observable for Variance {
+    type Output = f64;
+
+    const NAME: &'static str = "variance";
+
+    fn new() -> Variance {
+        Variance { data: Vec::new() }
     }
 
-    fn frequency(&self) -> MeasureFrequency {
-        MeasureFrequency::Sweep(1)
-    }
-
-    fn burn_in(&self) -> bool {
-        false
-    }
-
-    fn measure(&mut self, data: &SystemData) {
-        let mean = data.lattice.variance();
-        self.data.push(mean);
-    }
-
-    fn measured(&self) -> Option<f64> {
-        self.data.last().copied()
-    }
-
-    fn clear(&mut self) {
-        self.data.clear();
-    }
-
-    fn prepare(&mut self, n: usize) {
+    fn reserve(&mut self, n: usize) {
         self.data.reserve(n);
+    }
+
+    fn observe(&mut self, system: &SystemData) {
+        self.data.push(system.lattice.variance());
+    }
+
+    fn latest(&self) -> Option<f64> {
+        self.data.last().copied()
     }
 }
