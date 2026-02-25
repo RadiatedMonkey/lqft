@@ -234,7 +234,7 @@ use std::sync::atomic::{Ordering};
 // }
 
 use prometheus_exporter::prometheus as ps;
-use crate::observable_impl::{MeanValue, Variance};
+use crate::observable_impl::{ActionDensity, Mean, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     let inc = new_value - ctr.get();
@@ -328,10 +328,9 @@ impl MetricState {
 
 impl<T: ObservableHList> System<T> {
     pub fn push_metrics(&mut self) {
-        let sweep_size = self.lattice().sweep_size();
-
-        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
+        self.measured::<Mean>().inspect(|&v| self.metrics.mean.set(v));
         self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
+        self.measured::<ActionDensity>().inspect(|&v| self.metrics.action_density.set(v));
 
         let metrics = &mut self.metrics;
 
@@ -345,7 +344,6 @@ impl<T: ObservableHList> System<T> {
         metrics.progress.set(progress);
 
         metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
-        metrics.action_density.set(self.data.stats.current_action / sweep_size as f64);
 
         set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
 

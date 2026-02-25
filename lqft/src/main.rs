@@ -15,7 +15,7 @@ use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::observable_impl::{MeanValue, Variance};
+use crate::observable_impl::{ActionDensity, Mean, Variance};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -59,8 +59,9 @@ async fn app() -> anyhow::Result<()> {
         .with_performance(PerformanceDesc {
             lattice_iter: LatticeIterMethod::Parallel
         })
-        .with_observable::<MeanValue>()
+        .with_observable::<Mean>()
         .with_observable::<Variance>()
+        .with_observable::<ActionDensity>()
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
@@ -76,7 +77,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50_000;
+    let total_sweeps = 1;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;

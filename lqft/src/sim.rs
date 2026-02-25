@@ -1,5 +1,5 @@
 use crate::lattice::Lattice;
-use crate::observable_impl::MeanValue;
+use crate::observable_impl::Mean;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
@@ -15,7 +15,7 @@ use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use rand::RngExt;
-use crate::observable::{Observable, ObservableHList, ObservableStorage};
+use crate::observable::{Observable, ObservableHList, ObservableStore};
 use crate::metrics::MetricState;
 
 const LANES: usize = 4;
@@ -61,7 +61,7 @@ pub struct System<O: ObservableHList> {
     pub simulating: bool,
     pub metrics: MetricState,
     pub snapshot: Option<SnapshotState>,
-    pub observables: ObservableStorage<O>,
+    pub observables: ObservableStore<O>,
     pub data: SystemData
 }
 
@@ -220,11 +220,6 @@ impl<T: ObservableHList> System<T> {
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
         self.data.stats.desired_sweeps = total_sweeps;
 
-        let action = self.compute_full_action();
-        self.data.stats.current_action = action;
-
-        tracing::debug!("Starting action is: {action}");
-
         if let Some(state) = &mut self.snapshot {
             state.init(self.data.lattice.dimensions(), total_sweeps)?;
         }
@@ -299,12 +294,6 @@ impl<T: ObservableHList> System<T> {
             let sweep_time = sweep_timer.elapsed();
             sweep_timer = Instant::now();
 
-            if i % 100 == 0 {
-                // Recalculate total action
-                let action = self.compute_full_action();
-                self.data.stats.current_action = action;
-            }
-
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
             if i > 2 * self.data.burn_in_desc.block_size {
@@ -314,7 +303,9 @@ impl<T: ObservableHList> System<T> {
                 if i % self.data.burn_in_desc.block_size == 0 && self.data.stats.thermalised_at.is_none() {
                     if thermalised {
                         self.data.successful_therm_checks += 1;
+                        tracing::info!("System passed {} successive thermalisation checks", self.data.successful_therm_checks);
                     } else {
+                        tracing::info!("System failed thermalisation check, resetting counter");
                         self.data.successful_therm_checks = 0;
                     }
 
@@ -335,7 +326,7 @@ impl<T: ObservableHList> System<T> {
             } else {
                 // Store samples to estimate autocorrelation time.
                 // self.data.autocorrelation_samples.push(self.lattice().mean());
-                self.data.autocorrelation_samples.push(self.observables.measured::<MeanValue>().unwrap_or(0.0));
+                self.data.autocorrelation_samples.push(self.observables.measured::<Mean>().unwrap_or(0.0));
                 // self.data.autocorrelation_samples.push(self.compute_full_action());
             }
 
@@ -388,111 +379,8 @@ impl<T: ObservableHList> System<T> {
         self.observables.measured::<U>()
     }
 
-    pub fn observables(&self) -> &ObservableStorage<T> {
+    pub fn observables(&self) -> &ObservableStore<T> {
         &self.observables
-    }
-
-    /// Computes the autocorrelation time of the system in its current state.
-    fn compute_autocorrelation(&self) -> f64 {
-        todo!()
-    }
-
-    /// Computes the absolute action of the entire lattice.
-    pub fn compute_full_action(&self) -> f64 {
-        // TODO: Add sequential version
-
-        let msquared = f64x4::splat(self.mass_squared());
-        let coupling = f64x4::splat(self.coupling());
-        let spacing = f64x4::splat(self.lattice().spacing());
-        let a4 = spacing * spacing * spacing * spacing;
-        let div_a = f64x4::splat(1.0) / spacing;
-        let dims = self.lattice().dimensions();
-
-        // Compute action for red sites
-
-        let black_sites = &self.lattice().black_sites;
-        let action_red = self
-            .data.lattice.red_sites
-            .par_chunks(8)
-            .enumerate()
-            .map(|(i, chunk)| {
-                let site_vals = f64x4::from_slice(chunk);
-                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x4::splat(0.0);
-                for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
-                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
-
-                    let fneigh_vals = f64x4::gather_or_default(black_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x4::gather_or_default(black_sites, bneigh_idxs / TWO);
-
-                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
-                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
-
-                    der_sum += f1_sqrt * f1_sqrt;
-                }
-
-                const HALF: f64x4 = f64x4::splat(0.5);
-                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
-
-                let site_vals2 = site_vals * site_vals;
-                let site_vals4 = site_vals2 * site_vals2;
-
-                let kinetic = HALF * der_sum;
-                let mass = HALF * msquared * site_vals2;
-                let inter = TFOURTH * coupling * site_vals4;
-
-                a4 * (kinetic + mass + inter)
-            })
-            .reduce(
-                || f64x4::splat(0.0),
-                |a, b| a + b
-            )
-            .reduce_sum();
-
-        let red_sites = &self.lattice().red_sites;
-        let action_black = self
-            .data.lattice.black_sites
-            .par_chunks(8)
-            .enumerate()
-            .map(|(i, chunk)| {
-                let site_vals = f64x4::from_slice(chunk);
-                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
-
-                let mut der_sum = f64x4::splat(0.0);
-                for i in 0..4 {
-                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
-                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
-
-                    let fneigh_vals = f64x4::gather_or_default(red_sites, fneigh_idxs / TWO);
-                    // let bneigh_vals = f64x4::gather_or_default(red_sites, bneigh_idxs / TWO);
-
-                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
-                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
-
-                    der_sum += f1_sqrt * f1_sqrt
-                }
-
-                const HALF: f64x4 = f64x4::splat(0.5);
-                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
-
-                let site_vals2 = site_vals * site_vals;
-                let site_vals4 = site_vals2 * site_vals2;
-
-                let kinetic = HALF * der_sum;
-                let mass = HALF * msquared * site_vals2;
-                let inter = TFOURTH * coupling * site_vals4;
-
-                a4 * (kinetic + mass + inter)
-            })
-            .reduce(
-                || f64x4::splat(0.0),
-                |a, b| a + b
-            )
-            .reduce_sum();
-
-        action_red + action_black
     }
 
     /// The current statistics of the simulation.
@@ -539,4 +427,105 @@ impl<T: ObservableHList> System<T> {
     pub fn thermalised(&self) -> bool {
         self.data.stats.thermalised_at.is_some()
     }
+}
+
+impl SystemData {
+    /// Computes the absolute action of the entire lattice.
+    pub fn compute_full_action(&self) -> f64 {
+        // TODO: Add sequential version
+
+        let msquared = f64x4::splat(self.mass_squared);
+        let coupling = f64x4::splat(self.coupling);
+        let spacing = f64x4::splat(self.lattice.spacing());
+        let a4 = spacing * spacing * spacing * spacing;
+        let div_a = f64x4::splat(1.0) / spacing;
+        let dims = self.lattice.dimensions();
+
+        // Compute action for red sites
+
+        let black_sites = &self.lattice.black_sites;
+        let action_red = self
+            .lattice.red_sites
+            .par_chunks(8)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let site_vals = f64x4::from_slice(chunk);
+                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
+
+                let mut der_sum = f64x4::splat(0.0);
+                for i in 0..4 {
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+
+                    let fneigh_vals = f64x4::gather_or_default(black_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = f64x4::gather_or_default(black_sites, bneigh_idxs / TWO);
+
+                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
+                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+
+                    der_sum += f1_sqrt * f1_sqrt;
+                }
+
+                const HALF: f64x4 = f64x4::splat(0.5);
+                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
+
+                let site_vals2 = site_vals * site_vals;
+                let site_vals4 = site_vals2 * site_vals2;
+
+                let kinetic = HALF * der_sum;
+                let mass = HALF * msquared * site_vals2;
+                let inter = TFOURTH * coupling * site_vals4;
+
+                a4 * (kinetic + mass + inter)
+            })
+            .reduce(
+                || f64x4::splat(0.0),
+                |a, b| a + b
+            )
+            .reduce_sum();
+
+        let red_sites = &self.lattice.red_sites;
+        let action_black = self
+            .lattice.black_sites
+            .par_chunks(8)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let site_vals = f64x4::from_slice(chunk);
+                let site_idxs = (usizex4::splat(i) + CTR) * TWO;
+
+                let mut der_sum = f64x4::splat(0.0);
+                for i in 0..4 {
+                    let fneigh_idxs = find_fneighbors(site_idxs, dims, i);
+                    // let bneigh_idxs = find_bneighbors(site_idxs, dims, i);
+
+                    let fneigh_vals = f64x4::gather_or_default(red_sites, fneigh_idxs / TWO);
+                    // let bneigh_vals = f64x4::gather_or_default(red_sites, bneigh_idxs / TWO);
+
+                    let f1_sqrt = (fneigh_vals - site_vals) * div_a;
+                    // let b1_sqrt = (site_vals - bneigh_vals) * div_a;
+
+                    der_sum += f1_sqrt * f1_sqrt
+                }
+
+                const HALF: f64x4 = f64x4::splat(0.5);
+                const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
+
+                let site_vals2 = site_vals * site_vals;
+                let site_vals4 = site_vals2 * site_vals2;
+
+                let kinetic = HALF * der_sum;
+                let mass = HALF * msquared * site_vals2;
+                let inter = TFOURTH * coupling * site_vals4;
+
+                a4 * (kinetic + mass + inter)
+            })
+            .reduce(
+                || f64x4::splat(0.0),
+                |a, b| a + b
+            )
+            .reduce_sum();
+
+        action_red + action_black
+    }
+
 }

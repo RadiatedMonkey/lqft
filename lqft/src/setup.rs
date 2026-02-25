@@ -7,11 +7,11 @@ use anyhow::Context;
 use atomic_float::AtomicF64;
 use hdf5_metno as hdf5;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::{ops::Range, sync::atomic::Ordering, time::UNIX_EPOCH};
 use crate::observable::{Observable, ObservableBuilder, ObservableHList};
 use crate::sim::SystemData;
 use crate::metrics::MetricState;
+use crate::observable_impl::ActionDensity;
 
 impl<T: ObservableHList> System<T> {
     /// Determines whether thermalisation of the system has finished.
@@ -24,7 +24,7 @@ impl<T: ObservableHList> System<T> {
     pub fn compute_burn_in_ratio(&self) -> (f64, bool) {
         let bsize = self.th_block_size();
 
-        let action_history = &self.stats().action_history;
+        let action_history = &self.observables.history::<ActionDensity>();
         let ah_len = action_history.len();
         if ah_len < 2 * bsize {
             return (0.0, false);
@@ -374,6 +374,7 @@ impl<T: ObservableHList> SystemBuilder<T> {
     ///
     /// See [`SnapshotDesc`] for more information.
     pub fn enable_snapshot(mut self, desc: SnapshotDesc) -> Self {
+        tracing::info!("Enabled snapshots, saving to {}", desc.file);
         self.snapshot = Some(desc);
         self
     }
@@ -387,6 +388,7 @@ impl<T: ObservableHList> SystemBuilder<T> {
     }
 
     pub fn with_observable<O: Observable>(self) -> SystemBuilder<(T, O)> {
+        tracing::info!("Added observable \"{}\", measuring type {}", O::NAME, std::any::type_name::<O::Output>());
         SystemBuilder {
             observables: self.observables.with::<O>(),
             acceptance_desc: self.acceptance_desc,
@@ -440,6 +442,7 @@ impl<T: ObservableHList> SystemBuilder<T> {
 
     /// Creates the simulation using the given options.
     pub fn build(self) -> anyhow::Result<System<T>> {
+        tracing::info!("System is using {} observables.", T::LEN);
         tracing::info!("Finished configuration, building simulation...");
 
         if let LatticeDesc::Create(desc) = &self.lattice_desc {
@@ -505,17 +508,13 @@ impl<T: ObservableHList> SystemBuilder<T> {
             autocorrelation_samples: Vec::new()
         };
 
-        let mut sim = System {
+        let sim = System {
             data,
             observables: self.observables.build(),
             simulating: false,
             metrics: MetricState::new()?,
             snapshot: snapshot_state,
         };
-
-        let first_action = sim.compute_full_action();
-        sim.data.stats.current_action = first_action;
-        sim.data.stats.action_history.push(first_action);
 
         sim.metrics.sweep_size.inc_by(sim.data.lattice.sweep_size() as u64);
 
