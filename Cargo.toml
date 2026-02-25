@@ -13,3 +13,4 @@ overflow-checks = false
 #lto = "fat"
 incremental = false
 codegen-units = 16
+panic = "abort"

@@ -9,32 +9,13 @@ mod stats;
 mod metrics;
 mod observable_impl;
 
-use crate::setup::{AcceptanceDesc, BurnInDesc, FlushMethod, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, LatticeLoadDesc, ParamDesc, PerformanceDesc, SnapshotDesc, SnapshotLocation, SnapshotType, SystemBuilder};
+use crate::setup::{AcceptanceDesc, BurnInDesc, InitialState, LatticeCreateDesc, LatticeDesc, LatticeIterMethod, ParamDesc, PerformanceDesc, SystemBuilder};
 use std::process::ExitCode;
 use tracing_loki::url::Url;
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::observable_impl::{MeanValue, Variance};
-
-/// Makes all struct fields public in the current and specified modules.
-/// This makes it easier to spread implementation details over multiple archive.
-#[macro_export]
-macro_rules! all_public_in {
-    ($module:path, $vis:vis struct $name:ident {
-        $(
-            $(#[$meta:meta])*
-            $field_name:ident: $field_type:ty
-        ),* $(,)?
-    }) => {
-        $vis struct $name {
-            $(
-                $(#[$meta])*
-                pub(in $module) $field_name : $field_type
-            ),*
-        }
-    }
-}
+use crate::observable_impl::{ActionDensity, Mean, Variance};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -47,8 +28,6 @@ async fn main() -> ExitCode {
 }
 
 async fn app() -> anyhow::Result<()> {
-    assert!(is_x86_feature_detected!("avx"));
-
     let (layer, task) = tracing_loki::builder()
         .label("application", "lqft")?
         .label("env", "dev")?
@@ -80,8 +59,9 @@ async fn app() -> anyhow::Result<()> {
         .with_performance(PerformanceDesc {
             lattice_iter: LatticeIterMethod::Parallel
         })
-        .with_observable::<MeanValue>()
+        .with_observable::<Mean>()
         .with_observable::<Variance>()
+        .with_observable::<ActionDensity>()
         .with_acceptance(AcceptanceDesc {
             correction_interval: 20_000,
             initial_step_size: 1.0,
@@ -97,7 +77,7 @@ async fn app() -> anyhow::Result<()> {
 
     // visual::plot_lattice(0, sim.lattice())?;
 
-    let total_sweeps = 50_000;
+    let total_sweeps = 1;
     sim.simulate_checkerboard(total_sweeps)?;
 
     // visual::plot_lattice(1, sim.lattice())?;

@@ -1,33 +1,29 @@
 use crate::lattice::Lattice;
+use crate::observable_impl::Mean;
 use crate::setup::{AcceptanceDesc, BurnInDesc};
 use crate::snapshot::{SnapshotState};
 use crate::stats::SystemStats;
 use atomic_float::AtomicF64;
 use hdf5_metno::H5Type;
-use num_traits::Pow;
 use rand_xoshiro::rand_core::{Rng, SeedableRng};
-use rand_xoshiro::{Xoshiro256PlusPlus, rand_core};
+use rand_xoshiro::{Xoshiro256PlusPlus};
 use rayon::prelude::*;
-use serde::Deserialize;
-use serde::Serialize;
-use std::ops::{Div, Range};
+use realfft::RealFftPlanner;
 use std::simd::num::SimdFloat;
-use std::simd::{f64x4, u64x8, usizex4, Select, Simd, StdFloat};
+use std::simd::{f64x4, usizex4, Select, StdFloat};
 use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool};
 use std::time::Instant;
 use rand::RngExt;
-use crate::observable::{Observable, ObservableRegistry};
+use crate::observable::{Observable, ObservableHList, ObservableStore};
 use crate::metrics::MetricState;
-use crate::all_public_in;
 
 const LANES: usize = 4;
 const CTR: usizex4 = usizex4::from_array([0, 1, 2, 3]);
 const TWO: usizex4 = usizex4::splat(2);
 
 /// Simulation settings that should be saved to the archive.
-#[derive(H5Type, Serialize, Deserialize)]
+#[derive(H5Type)]
 #[repr(C)]
 pub struct SystemSettings {
     pub spacing: f64,
@@ -53,25 +49,21 @@ pub struct SystemData {
     pub coupling: f64,
     pub acceptance_desc: AcceptanceDesc,
     pub burn_in_desc: BurnInDesc,
-    /// A vector for every possible C(t)
-    /// where the inner vector is for every sweep
-    pub correlation_slices: Vec<f64>,
-    pub measurement_interval: usize,
+
     pub current_step_size: AtomicF64,
     pub stats: SystemStats,
-    pub successful_therm_checks: usize
+    pub successful_therm_checks: usize,
+
+    pub autocorrelation_samples: Vec<f64>
 }
 
-all_public_in!(
-    super,
-    pub struct System {
-        simulating: AtomicBool,
-        metrics: MetricState,
-        snapshot_state: Option<SnapshotState>,
-        observables: ObservableRegistry,
-        data: SystemData
-    }
-);
+pub struct System<O: ObservableHList> {
+    pub simulating: bool,
+    pub metrics: MetricState,
+    pub snapshot: Option<SnapshotState>,
+    pub observables: ObservableStore<O>,
+    pub data: SystemData
+}
 
 #[inline(always)]
 fn to_coord(idx: usizex4, dims: [usize; 4]) -> [usizex4; 4] {
@@ -128,7 +120,7 @@ fn find_bneighbors(site_idx: usizex4, dims: [usize; 4], dir: usize) -> usizex4 {
 }
 
 
-impl System {
+impl<T: ObservableHList> System<T> {
     /// Attempts to flip 8 sites starting from `idx`, returning the change in action.
     #[inline(always)]
     fn flip_site_chunk<R: Rng>(
@@ -187,7 +179,7 @@ impl System {
             }
 
             const HALF: f64x4 = f64x4::splat(0.5);
-            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);;
+            const TFOURTH: f64x4 = f64x4::splat(1.0 / 24.0);
 
             let msquared = f64x4::splat(mass_squared);
             let coupling = f64x4::splat(coupling);
@@ -228,18 +220,11 @@ impl System {
     pub fn simulate_checkerboard(&mut self, total_sweeps: usize) -> anyhow::Result<()> {
         self.data.stats.desired_sweeps = total_sweeps;
 
-        let action = self.compute_full_action();
-        self.data.stats.current_action = action;
-
-        tracing::debug!("Starting action is: {action}");
-
-        if let Some(state) = &mut self.snapshot_state {
+        if let Some(state) = &mut self.snapshot {
             state.init(self.data.lattice.dimensions(), total_sweeps)?;
         }
 
         self.data.stats.reserve_capacity(total_sweeps);
-        self.data.correlation_slices
-            .resize(self.data.lattice.dimensions()[0], 0.0);
 
         tracing::info!("Running {total_sweeps} sweeps...");
 
@@ -256,11 +241,10 @@ impl System {
             self.data.stats.current_sweep = i;
 
             // First update red sites....
-            self.simulating.store(true, Ordering::SeqCst);
+            self.simulating = true;
 
             let step_size = self.current_step_size();
 
-            let action = &mut self.data.stats.current_action;
             let accepted_moves = &self.data.stats.accepted_moves;
             let total_moves = &self.data.stats.total_moves;
 
@@ -305,16 +289,10 @@ impl System {
                 }
             );
 
-            self.simulating.store(false, Ordering::SeqCst);
+            self.simulating = false;
 
             let sweep_time = sweep_timer.elapsed();
             sweep_timer = Instant::now();
-
-            if i % 100 == 0 {
-                // Recalculate total action
-                let action = self.compute_full_action();
-                self.data.stats.current_action = action;
-            }
 
             // Keep track of thermalisation ratio.
             let (th_ratio, thermalised) = self.compute_burn_in_ratio();
@@ -325,7 +303,9 @@ impl System {
                 if i % self.data.burn_in_desc.block_size == 0 && self.data.stats.thermalised_at.is_none() {
                     if thermalised {
                         self.data.successful_therm_checks += 1;
+                        tracing::info!("System passed {} successive thermalisation checks", self.data.successful_therm_checks);
                     } else {
+                        tracing::info!("System failed thermalisation check, resetting counter");
                         self.data.successful_therm_checks = 0;
                     }
 
@@ -337,8 +317,42 @@ impl System {
                 }
             }
 
+            self.observables.observe_all(&self.data);
+
+            const AUTOCOR_SAMPLE_SIZE: usize = 50;
+
             if self.data.stats.thermalised_at.is_none() {
                 self.correct_step_size();
+            } else {
+                // Store samples to estimate autocorrelation time.
+                // self.data.autocorrelation_samples.push(self.lattice().mean());
+                self.data.autocorrelation_samples.push(self.observables.measured::<Mean>().unwrap_or(0.0));
+                // self.data.autocorrelation_samples.push(self.compute_full_action());
+            }
+
+            if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
+                // Estimate autocorrelation time
+                let series_mean = self.data.autocorrelation_samples.iter().sum::<f64>() / AUTOCOR_SAMPLE_SIZE as f64;
+                let mut series = self.data.autocorrelation_samples.iter().map(|m| m - series_mean).collect::<Vec<_>>();
+                series.resize(2 * series.len(), 0.0);
+
+                let mut planner = RealFftPlanner::<f64>::new();
+                let fft = planner.plan_fft_forward(series.len());
+
+                let mut freq = fft.make_output_vec();
+                fft.process(&mut series, &mut freq).unwrap();
+
+                freq.iter_mut().for_each(|s| *s = *s * s.conj());
+
+                let inv_fft = planner.plan_fft_inverse(series.len());
+                let mut autocov = inv_fft.make_output_vec();
+                inv_fft.process(&mut freq, &mut autocov).unwrap();
+
+                let c0 = autocov[0];
+                let rho: Vec<f64> = autocov[..self.data.autocorrelation_samples.len()].iter().map(|&c| c / c0).collect();
+
+                let tau_int = 0.5 + rho[1..].iter().take_while(|&r| *r > 0.0).sum::<f64>();
+                println!("Autocorrelation time: {tau_int}");
             }
 
             // Record statistics on every sweep.
@@ -349,14 +363,10 @@ impl System {
                 total_timer = Instant::now();
             }
 
-            self.observables.measure(&mut self.data);
+            // self.observables.measure(&mut self.data);
         }
-
+        
         self.push_metrics();
-
-        for t in 0..self.data.lattice.dimensions()[0] {
-            self.data.correlation_slices[t] /= self.data.stats.performed_measurements as f64;
-        }
 
         tracing::info!("Run completed");
 
@@ -365,39 +375,77 @@ impl System {
 
     /// Obtains the latest measurements of the given observable.
     #[inline]
-    pub fn measured<O: Observable>(&self) -> Option<f64> {
-        self.observables.measured::<O>()
+    pub fn measured<U: Observable>(&self) -> Option<U::Output> {
+        self.observables.measured::<U>()
     }
 
-    pub fn observables(&self) -> &ObservableRegistry {
+    pub fn observables(&self) -> &ObservableStore<T> {
         &self.observables
     }
 
-    pub fn observables_mut(&mut self) -> &mut ObservableRegistry {
-        &mut self.observables
+    /// The current statistics of the simulation.
+    pub fn stats(&self) -> &SystemStats {
+        &self.data.stats
     }
 
-    /// Computes the autocorrelation time of the system in its current state.
-    fn compute_autocorrelation(&self) -> f64 {
-        todo!()
+    /// The current thermalisation ratio threshold.
+    ///
+    /// See [`SystemBuilder::th_threshold`] for more information.
+    pub fn th_threshold(&self) -> f64 {
+        self.data.burn_in_desc.required_ratio
     }
 
+    pub fn current_step_size(&self) -> f64 {
+        self.data.current_step_size.load(Ordering::Relaxed)
+    }
+
+    /// The current thermalisation block size.
+    ///
+    /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
+    pub fn th_block_size(&self) -> usize {
+        self.data.burn_in_desc.block_size
+    }
+
+    /// The current mass squared.
+    pub fn mass_squared(&self) -> f64 {
+        self.data.mass_squared
+    }
+
+    /// The current coupling constant.
+    pub fn coupling(&self) -> f64 {
+        self.data.coupling
+    }
+
+    /// The internal lattice used for data storage.
+    pub fn lattice(&self) -> &Lattice {
+        &self.data.lattice
+    }
+
+    /// Whether the system has thermalised yet.
+    ///
+    /// Once this returns true, the system is ready for measurement.
+    pub fn thermalised(&self) -> bool {
+        self.data.stats.thermalised_at.is_some()
+    }
+}
+
+impl SystemData {
     /// Computes the absolute action of the entire lattice.
     pub fn compute_full_action(&self) -> f64 {
         // TODO: Add sequential version
 
-        let msquared = f64x4::splat(self.mass_squared());
-        let coupling = f64x4::splat(self.coupling());
-        let spacing = f64x4::splat(self.lattice().spacing());
+        let msquared = f64x4::splat(self.mass_squared);
+        let coupling = f64x4::splat(self.coupling);
+        let spacing = f64x4::splat(self.lattice.spacing());
         let a4 = spacing * spacing * spacing * spacing;
         let div_a = f64x4::splat(1.0) / spacing;
-        let dims = self.lattice().dimensions();
+        let dims = self.lattice.dimensions();
 
         // Compute action for red sites
 
-        let black_sites = &self.lattice().black_sites;
+        let black_sites = &self.lattice.black_sites;
         let action_red = self
-            .data.lattice.red_sites
+            .lattice.red_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
@@ -436,9 +484,9 @@ impl System {
             )
             .reduce_sum();
 
-        let red_sites = &self.lattice().red_sites;
+        let red_sites = &self.lattice.red_sites;
         let action_black = self
-            .data.lattice.black_sites
+            .lattice.black_sites
             .par_chunks(8)
             .enumerate()
             .map(|(i, chunk)| {
@@ -480,69 +528,4 @@ impl System {
         action_red + action_black
     }
 
-    fn get_timeslice(&mut self) -> Vec<f64> {
-        // Compute the spatial sum for every time slice
-        let st = self.data.lattice.dim_t();
-
-        let mut sum_t = vec![0.0; st];
-        // for i in 0..self.data.lattice.sweep_size() {
-        //     let t = self.data.lattice.from_index(i)[0];
-        //     let val = unsafe { *self.data.lattice[i].get() };
-        //     sum_t[t] += val;
-        // }
-
-        sum_t
-    }
-}
-
-/// Getters and setters
-impl System {
-    /// The current statistics of the simulation.
-    pub fn stats(&self) -> &SystemStats {
-        &self.data.stats
-    }
-
-    /// The current thermalisation ratio threshold.
-    ///
-    /// See [`SystemBuilder::th_threshold`] for more information.
-    pub fn th_threshold(&self) -> f64 {
-        self.data.burn_in_desc.required_ratio
-    }
-
-    pub fn current_step_size(&self) -> f64 {
-        self.data.current_step_size.load(Ordering::Relaxed)
-    }
-
-    /// The current thermalisation block size.
-    ///
-    /// See [`SystemBuilder::th_block_size`](SystemBuilder::th_block_size) for more information.
-    pub fn th_block_size(&self) -> usize {
-        self.data.burn_in_desc.block_size
-    }
-
-    pub fn correlator2(&self) -> &[f64] {
-        &self.data.correlation_slices
-    }
-
-    /// The current mass squared.
-    pub fn mass_squared(&self) -> f64 {
-        self.data.mass_squared
-    }
-
-    /// The current coupling constant.
-    pub fn coupling(&self) -> f64 {
-        self.data.coupling
-    }
-
-    /// The internal lattice used for data storage.
-    pub fn lattice(&self) -> &Lattice {
-        &self.data.lattice
-    }
-
-    /// Whether the system has thermalised yet.
-    ///
-    /// Once this returns true, the system is ready for measurement.
-    pub fn thermalised(&self) -> bool {
-        self.data.stats.thermalised_at.is_some()
-    }
 }

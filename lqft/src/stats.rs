@@ -1,8 +1,8 @@
+use crate::observable::ObservableHList;
 use crate::setup::SnapshotType;
 use crate::sim::System;
 use crate::snapshot::SnapshotFragment;
-use atomic_float::AtomicF64;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Statistics of the simulation. Every finished sweep, a new statistic is recorded.
@@ -21,14 +21,6 @@ pub struct SystemStats {
     pub accept_ratio_history: Vec<f64>,
     /// History of the step size.
     pub step_size_history: Vec<f64>,
-    /// History of the field mean
-    pub mean_history: Vec<f64>,
-    /// History of the field variance.
-    pub meansq_history: Vec<f64>,
-    /// History of the action over time.
-    pub action_history: Vec<f64>,
-    /// The action at the current point in time.
-    pub current_action: f64,
     /// The history of the thermalisation ratio.
     pub thermalisation_ratio_history: Vec<f64>,
     /// The sweep at which the system first passed the thermalisation threshold.
@@ -47,16 +39,13 @@ pub struct SweepStats {
     pub accepted_moves: u64,
     pub accept_ratio: f64,
     pub step_size: f64,
-    pub mean: f64,
-    pub meansq: f64,
-    pub action: f64,
     pub th_ratio: f64,
     pub performed_measurements: usize,
     pub sweep_time: u128,
     pub stats_time: u128,
 }
 
-impl System {
+impl<T: ObservableHList> System<T> {
     /// Records statistics on the current sweep.
     pub(crate) fn record_stats(
         &mut self,
@@ -65,14 +54,6 @@ impl System {
         sweep: usize,
         total_sweeps: usize,
     ) -> anyhow::Result<()> {
-        let mean = self.data.lattice.mean_seq();
-        let meansq = self.data.lattice.meansq();
-        let action = self.data.stats.current_action;
-
-        self.data.stats.mean_history.push(mean);
-        self.data.stats.meansq_history.push(meansq);
-        self.data.stats.action_history.push(action);
-
         let accept = self.data.stats.accepted_moves();
         let total = self.data.stats.total_moves();
         let ratio = accept as f64 / total as f64 * 100.0;
@@ -86,7 +67,7 @@ impl System {
 
         // Generate snapshot if snapshotting is enabled and an interval is passed *or* this is the
         // last sweep.
-        if let Some(snapshot) = &self.snapshot_state {
+        if let Some(snapshot) = &self.snapshot {
             let should_snapshot = match snapshot.desc.ty {
                 SnapshotType::Checkpoint => sweep == total_sweeps - 1,
                 SnapshotType::Interval(interval) => {
@@ -99,7 +80,7 @@ impl System {
                     tracing::info!("Last sweep avg is: {}", self.data.lattice.mean_seq());
                 }
 
-                let clone = unsafe { self.data.lattice.clone() };
+                let clone = self.data.lattice.clone();
 
                 let stats_time = stat_timer.elapsed().as_millis();
                 let sweep = SweepStats {
@@ -107,9 +88,6 @@ impl System {
                     accepted_moves: accept,
                     accept_ratio: ratio,
                     step_size: self.current_step_size(),
-                    mean,
-                    meansq: 0.0,
-                    action,
                     th_ratio: 0.0,
                     performed_measurements: 0,
                     sweep_time: sweep_time.as_micros(),
@@ -145,17 +123,9 @@ impl SystemStats {
         self.accepted_move_history.reserve(count);
         self.accept_ratio_history.reserve(count);
         self.step_size_history.reserve(count);
-        self.mean_history.reserve(count);
-        self.meansq_history.reserve(count);
-        self.action_history.reserve(count);
         self.thermalisation_ratio_history.reserve(count);
         self.stats_time_history.reserve(count);
         self.sweep_time_history.reserve(count);
-    }
-
-    /// The most recent value of the whole system action.
-    pub fn current_action(&self) -> f64 {
-        self.current_action
     }
 
     /// The total amount of attempted moves so far.
@@ -174,15 +144,11 @@ impl Default for SystemStats {
         Self {
             current_sweep: 0,
             desired_sweeps: 0,
-            current_action: 0.0,
             total_moves: AtomicU64::new(0),
             accepted_move_history: Vec::new(),
             accepted_moves: AtomicU64::new(0),
             accept_ratio_history: Vec::new(),
             step_size_history: Vec::new(),
-            mean_history: Vec::new(),
-            meansq_history: Vec::new(),
-            action_history: Vec::new(),
             thermalisation_ratio_history: Vec::new(),
             thermalised_at: None,
             performed_measurements: 0,

@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
-use crate::sim::System;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{observable::ObservableHList, sim::System};
+use std::sync::atomic::{Ordering};
 
 // pub fn plot_lattice(index: usize, lattice: &Lattice) -> anyhow::Result<()> {
 //     let filename = format!("plots/step-{index}.png");
@@ -234,48 +233,42 @@ use std::sync::atomic::{AtomicBool, Ordering};
 //     Ok(())
 // }
 
-use prometheus::Encoder;
-use prometheus_exporter::Exporter;
 use prometheus_exporter::prometheus as ps;
-use crate::all_public_in;
-use crate::observable_impl::{MeanValue, Variance};
+use crate::observable_impl::{ActionDensity, Mean, Variance};
 
 pub fn set_int_to(ctr: &ps::IntCounter, new_value: u64) {
     let inc = new_value - ctr.get();
     ctr.inc_by(inc);
 }
 
-all_public_in! {
-    super,
-    pub struct MetricState {
-        total_moves: ps::IntCounter,
-        accepted_moves: ps::IntCounter,
-        accept_ratio: ps::Gauge,
-        progress: ps::Gauge,
+pub struct MetricState {
+    pub total_moves: ps::IntCounter,
+    pub accepted_moves: ps::IntCounter,
+    pub accept_ratio: ps::Gauge,
+    pub progress: ps::Gauge,
 
-        step_size: ps::Gauge,
-        action_density: ps::Gauge,
-        performed_measurements: ps::IntCounter,
+    pub step_size: ps::Gauge,
+    pub action_density: ps::Gauge,
+    pub performed_measurements: ps::IntCounter,
 
-        sweep_time: ps::Gauge,
-        stats_time: ps::Gauge,
-        therm_ratio: ps::Gauge,
-        completed_sweeps: ps::IntCounter,
-        thermalised_at: ps::IntCounter,
+    pub sweep_time: ps::Gauge,
+    pub stats_time: ps::Gauge,
+    pub therm_ratio: ps::Gauge,
+    pub completed_sweeps: ps::IntCounter,
+    pub thermalised_at: ps::IntCounter,
 
-        mean: ps::Gauge,
-        meansq: ps::Gauge,
-        var: ps::Gauge,
+    pub mean: ps::Gauge,
+    pub meansq: ps::Gauge,
+    pub var: ps::Gauge,
 
-        cpu: ps::Gauge,
-        mem: ps::Gauge,
+    pub cpu: ps::Gauge,
+    pub mem: ps::Gauge,
 
-        sys: sysinfo::System,
-        pid: sysinfo::Pid,
-        pid_ctr: ps::IntCounter,
-        runtime: ps::Gauge,
-        sweep_size: ps::IntCounter
-    }
+    pub sys: sysinfo::System,
+    pub pid: sysinfo::Pid,
+    pub pid_ctr: ps::IntCounter,
+    pub runtime: ps::Gauge,
+    pub sweep_size: ps::IntCounter
 }
 
 impl MetricState {
@@ -308,9 +301,6 @@ impl MetricState {
 
         let runtime = ps::register_gauge!("run_time", "Run time")?;
 
-        let running = Arc::new(AtomicBool::new(true));
-        let clone = Arc::clone(&running);
-
         let addr: SocketAddr = "127.0.0.1:9184".parse()?;
         prometheus_exporter::start(addr).expect("Failed to start Prometheus exporter");
 
@@ -336,12 +326,11 @@ impl MetricState {
     }
 }
 
-impl System {
+impl<T: ObservableHList> System<T> {
     pub fn push_metrics(&mut self) {
-        let sweep_size = self.lattice().sweep_size();
-
-        self.measured::<MeanValue>().inspect(|&v| self.metrics.mean.set(v));
+        self.measured::<Mean>().inspect(|&v| self.metrics.mean.set(v));
         self.measured::<Variance>().inspect(|&v| self.metrics.var.set(v));
+        self.measured::<ActionDensity>().inspect(|&v| self.metrics.action_density.set(v));
 
         let metrics = &mut self.metrics;
 
@@ -355,7 +344,6 @@ impl System {
         metrics.progress.set(progress);
 
         metrics.step_size.set(self.data.current_step_size.load(Ordering::Relaxed));
-        metrics.action_density.set(self.data.stats.current_action / sweep_size as f64);
 
         set_int_to(&metrics.performed_measurements, self.data.stats.performed_measurements as u64);
 
