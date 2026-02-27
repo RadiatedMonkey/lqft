@@ -1,24 +1,72 @@
 //! Implements the observable API.
 
 use std::any::{Any, TypeId};
-use std::fmt;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use realfft::RealFftPlanner;
+
 use crate::sim::SystemData;
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum CorrelationResult {
+    /// The autocorrelation time has been computed successfully.
+    Success(f64), 
+    Sampling,
+    Disabled
+}
+
+pub trait CorrelationList {
+    fn is_success(&self) -> bool;
+}
+
+impl CorrelationList for () {
+    fn is_success(&self) -> bool {
+        false
+    }
+}
+
+impl CorrelationList for CorrelationResult {
+    fn is_success(&self) -> bool {
+        match self { Self::Success(_) => true, _ => false }
+    }
+}
+
+impl<U: CorrelationList> CorrelationList for (U, CorrelationResult) {
+    fn is_success(&self) -> bool {
+        self.0.is_success() && self.1.is_success()
+    }
+}
+
+pub struct ObservableMeta {
+    autocor_time: f64
+}
+
+impl ObservableMeta {
+    pub fn new() -> ObservableMeta {
+        ObservableMeta {
+            autocor_time: 0.0
+        }
+    }
+}
 
 /// A list of different observables.
 pub trait ObservableHList: 'static {
+    type State;
+
     /// The amount of observables in this list.
     const LEN: usize;
 
     /// Creates a new empty list.
-    fn new() -> Self;
+    fn new() -> Self::State;
 
     /// Determines whether an observable is in the list.
     fn has<O: Observable>() -> bool;
 
     /// Collects data for all observables.
     fn observe(&mut self, system: &SystemData);
+
+    // Returns the computed autocorrelation time of the observable.
+    fn autocorrelation<O: Observable>(&self) -> Option<f64>;
 
     /// Returns the measurement history for the given observable.
     ///
@@ -42,6 +90,8 @@ pub trait ObservableHList: 'static {
 }
 
 impl ObservableHList for () {
+    type State = ();
+
     const LEN: usize = 0;
 
     fn new() -> () {}
@@ -51,6 +101,8 @@ impl ObservableHList for () {
     }
 
     fn observe(&mut self, _system: &SystemData) {}
+
+    fn autocorrelation<O: Observable>(&self) -> Option<f64> { None }
 
     fn history<O: Observable>(&self) -> &[O::Output] {
         panic!("Cannot retrieve history. Observable \"{}\" is not registered. Register it using `SystemBuilder::with_observable`", O::NAME);
@@ -71,10 +123,12 @@ impl ObservableHList for () {
     }
 }
 
-impl<O1: Observable> ObservableHList for O1 {
+impl<O1: Observable> ObservableHList for (O1) {
+    type State = (ObservableMeta, O1);
+
     const LEN: usize = 1;
 
-    fn new() -> O1 { <O1 as Observable>::new() }
+    fn new() -> (ObservableMeta, O1) { (ObservableMeta::new(), <O1 as Observable>::new()) }
 
     fn has<O: Observable>() -> bool { 
         TypeId::of::<O>() == TypeId::of::<O1>() 
@@ -83,6 +137,70 @@ impl<O1: Observable> ObservableHList for O1 {
     fn observe(&mut self, system: &SystemData) {
         <O1 as Observable>::observe(self, system);
     }
+
+    fn autocorrelation<O: Observable>(&self) -> Option<f64> {
+
+    }
+
+    // fn autocorrelation<O: Observable>(&self) -> Option<f64> where O::Output: Into<f64> {
+    //     let cast = (self as &dyn Any)
+    //         .downcast_ref::<O>()
+    //         .expect("Autocorrelation cast failed, this is a bug.");
+
+    //     let series = cast.history();
+
+    //     let series_cast = series.iter().map(|&f| <O::Output as Into<f64>>::into(f));
+    //     let series_mean = series_cast.clone().sum::<f64>() / series.len() as f64;
+        
+    //     let mut series_2n = Vec::with_capacity(2 * series.len());
+    //     series_2n.extend(series_cast.map(|f| f - series_mean));
+    //     series_2n.resize(2 * series.len(), 0.0);
+
+    //     let mut planner = RealFftPlanner::<f64>::new();
+    //     let fft = planner.plan_fft_forward(series_2n.len());
+
+    //     let mut freq = fft.make_output_vec();
+    //     fft.process(&mut series_2n, &mut freq);
+
+    //     freq.iter_mut().for_each(|s| *s = *s * s.conj());
+
+    //     let inv_fft = planner.plan_fft_inverse(series_2n.len());
+    //     let mut autocov = inv_fft.make_output_vec();
+    //     inv_fft.process(&mut freq, &mut autocov);
+
+    //     let c0 = autocov[0];
+    //     let rho = autocov[..series.len()].iter().map(|&c| c / c0);
+    //     let tau_int = 0.5 + rho.skip(1).take_while(|&r| r > 0.0).sum::<f64>();
+
+    //     println!("Autocorrelation time: {tau_int}");
+
+    //     Some(tau_int)
+
+    //     // if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
+    //         //     // Estimate autocorrelation time
+    //         //     let series_mean = self.data.autocorrelation_samples.iter().sum::<f64>() / AUTOCOR_SAMPLE_SIZE as f64;
+    //         //     let mut series = self.data.autocorrelation_samples.iter().map(|m| m - series_mean).collect::<Vec<_>>();
+    //         //     series.resize(2 * series.len(), 0.0);
+
+    //         //     let mut planner = RealFftPlanner::<f64>::new();
+    //         //     let fft = planner.plan_fft_forward(series.len());
+
+    //         //     let mut freq = fft.make_output_vec();
+    //         //     fft.process(&mut series, &mut freq).unwrap();
+
+    //         //     freq.iter_mut().for_each(|s| *s = *s * s.conj());
+
+    //         //     let inv_fft = planner.plan_fft_inverse(series.len());
+    //         //     let mut autocov = inv_fft.make_output_vec();
+    //         //     inv_fft.process(&mut freq, &mut autocov).unwrap();
+
+    //         //     let c0 = autocov[0];
+    //         //     let rho: Vec<f64> = autocov[..self.data.autocorrelation_samples.len()].iter().map(|&c| c / c0).collect();
+
+    //         //     let tau_int = 0.5 + rho[1..].iter().take_while(|&r| *r > 0.0).sum::<f64>();
+    //         //     println!("Autocorrelation time: {tau_int}");
+    //         // }
+    // }
 
     fn history<O: Observable>(&self) -> &[O::Output] {
         if !Self::has::<O>() {
@@ -120,10 +238,12 @@ impl<O1: Observable> ObservableHList for O1 {
 }
 
 impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
+    type State = (OL::State, (ObservableMeta, O1));
+
     const LEN: usize = 1 + OL::LEN;
 
-    fn new() -> (OL, O1) {
-        (OL::new(), <O1 as Observable>::new())
+    fn new() -> Self::State {
+        (OL::new(), (ObservableMeta::new(), <O1 as Observable>::new()))
     }
 
     fn has<O: Observable>() -> bool { 
@@ -135,11 +255,15 @@ impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
         OL::observe(&mut self.0, system);
     }
 
+    fn autocorrelation(&self) {
+        todo!()
+    }
+
     fn history<O: Observable>(&self) -> &[O::Output] {
         if O1::has::<O>() {
             let cast = (&self.1 as &dyn Any)
                 .downcast_ref::<O>()
-                .expect("O1 != O, this is a bug. In (OL, O1)");
+                .expect("O1 != O, this is a bug. In (OL, O1) history");
             <O as Observable>::history(cast)
         } else {
             OL::history::<O>(&self.0)
@@ -213,9 +337,21 @@ impl<Obs: ObservableHList> ObservableBuilder<Obs> {
     /// Creates an observable storage from this builder.
     pub fn build(self) -> ObservableStore<Obs> {
         ObservableStore {
-            storage: Obs::new()
+            storage: Obs::new(),
+            phase: ObservablePhase::BurnIn
         }
     }
+}
+
+/// The phase the observables are currently in.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ObservablePhase {
+    /// The system is still waiting for thermalisation.
+    BurnIn,
+    /// The system is collecting samples to compute the autocorrelation times.
+    Sampling,
+    /// The system is measuring.
+    Normal
 }
 
 /// Stores observables and their associated data.
@@ -225,6 +361,7 @@ impl<Obs: ObservableHList> ObservableBuilder<Obs> {
 /// method completely avoids dynamic dispatch by encoding the contents of the storage inside of the type at
 /// compile time. This means that the compiler will evaluate a lot of the code at compile time rather than
 /// runtime.
+#[derive(Clone)]
 pub struct ObservableStore<Obs: ObservableHList> {
     // Originally wanted to implement `Debug` for this to easily print out observable values but it seems
     // like this is impossible unless I require that every single observable is `Debug`.
@@ -232,10 +369,19 @@ pub struct ObservableStore<Obs: ObservableHList> {
     // Treating `Debug` and non-`Debug` observables differently either requires specialisation
     // (which is highly unstable) or autoref specialisation, which is stable but only work with
     // concrete types, not the generics we are dealing with.
-    storage: Obs
+    storage: Obs::State,
+    phase: ObservablePhase
 }
 
 impl<Obs: ObservableHList> ObservableStore<Obs> {
+    pub(crate) fn set_phase(&mut self, phase: ObservablePhase) {
+        self.phase = phase;
+    }
+
+    pub fn phase(&self) -> ObservablePhase {
+        self.phase
+    }
+
     /// Determines whether the storage contains the given observable.
     /// 
     /// This function is entirely evaluated at compile time.
@@ -252,6 +398,12 @@ impl<Obs: ObservableHList> ObservableStore<Obs> {
     #[inline]
     pub fn observe_all(&mut self, data: &SystemData) {
         self.storage.observe(data);
+    }
+
+    #[inline]
+    pub fn autocorrelation<O: Observable>(&mut self) {
+        let cor = self.storage.autocorrelation::<O>();
+        tracing::info!("{cor:?}");
     }
 
     /// Reserves capacity for `n` additional measurements.
@@ -294,13 +446,14 @@ impl<Obs: ObservableHList> ObservableStore<Obs> {
     }
 }
 
-impl<Obs: Clone + ObservableHList> Clone for ObservableStore<Obs> {
-    fn clone(&self) -> Self {
-        ObservableStore {
-            storage: self.storage.clone()
-        }
-    }
-}
+// impl<Obs: Clone + ObservableHList> Clone for ObservableStore<Obs> {
+//     fn clone(&self) -> Self {
+//         ObservableStore {
+//             storage: self.storage.clone(),
+//             phase: 
+//         }
+//     }
+// }
 
 /// Represents an observable. This allows a struct to make arbitrary measurements of the system.
 /// 
@@ -311,7 +464,7 @@ pub trait Observable: 'static {
     /// The data type of the measurements of this observable.
     /// 
     /// *Note*: ideally this should be a small type since it is cloned when it is accessed.
-    type Output: Clone + 'static;
+    type Output: Copy + 'static;
 
     /// The name of the observable. This is used as the identifier in Prometheus metrics.
     /// 

@@ -15,7 +15,7 @@ use std::simd::prelude::SimdPartialOrd;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 use rand::RngExt;
-use crate::observable::{Observable, ObservableHList, ObservableStore};
+use crate::observable::{Observable, ObservableHList, ObservablePhase, ObservableStore};
 use crate::metrics::MetricState;
 
 const LANES: usize = 4;
@@ -312,6 +312,8 @@ impl<T: ObservableHList> System<T> {
                     if self.data.successful_therm_checks == self.data.burn_in_desc.consecutive_passes {
                         // System has thermalised
                         self.data.stats.thermalised_at = Some(i);
+                        // Start determining autocorrelation times.
+                        self.observables_mut().set_phase(ObservablePhase::Sampling);
                         tracing::info!("System has thermalised at sweep {i} after {} consecutive checks", self.data.burn_in_desc.consecutive_passes);
                     }
                 }
@@ -319,41 +321,58 @@ impl<T: ObservableHList> System<T> {
 
             self.observables.observe_all(&self.data);
 
-            const AUTOCOR_SAMPLE_SIZE: usize = 50;
+            match self.observables().phase() {
+                ObservablePhase::BurnIn => {
+                    self.correct_step_size();
+                },
+                ObservablePhase::Sampling => {
+                    // Take sample every sweep for autocorrelation computation.
+                    let observables = &mut self.observables;
+                    let data = &self.data;
 
-            if self.data.stats.thermalised_at.is_none() {
-                self.correct_step_size();
-            } else {
-                // Store samples to estimate autocorrelation time.
-                // self.data.autocorrelation_samples.push(self.lattice().mean());
-                self.data.autocorrelation_samples.push(self.observables.measured::<Mean>().unwrap_or(0.0));
-                // self.data.autocorrelation_samples.push(self.compute_full_action());
+                    observables.observe_all(data);
+                    observables.autocorrelation();
+                },
+                ObservablePhase::Normal => {
+                    todo!()
+                }
             }
 
-            if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
-                // Estimate autocorrelation time
-                let series_mean = self.data.autocorrelation_samples.iter().sum::<f64>() / AUTOCOR_SAMPLE_SIZE as f64;
-                let mut series = self.data.autocorrelation_samples.iter().map(|m| m - series_mean).collect::<Vec<_>>();
-                series.resize(2 * series.len(), 0.0);
+            // const AUTOCOR_SAMPLE_SIZE: usize = 50;
+            
+            // if self.data.stats.thermalised_at.is_none() {
+            //     self.correct_step_size();
+            // } else {
+            //     // Store samples to estimate autocorrelation time.
+            //     // self.data.autocorrelation_samples.push(self.lattice().mean());
+            //     self.data.autocorrelation_samples.push(self.observables.measured::<Mean>().unwrap_or(0.0));
+            //     // self.data.autocorrelation_samples.push(self.compute_full_action());
+            // }
 
-                let mut planner = RealFftPlanner::<f64>::new();
-                let fft = planner.plan_fft_forward(series.len());
+            // if self.data.autocorrelation_samples.len() == AUTOCOR_SAMPLE_SIZE {
+            //     // Estimate autocorrelation time
+            //     let series_mean = self.data.autocorrelation_samples.iter().sum::<f64>() / AUTOCOR_SAMPLE_SIZE as f64;
+            //     let mut series = self.data.autocorrelation_samples.iter().map(|m| m - series_mean).collect::<Vec<_>>();
+            //     series.resize(2 * series.len(), 0.0);
 
-                let mut freq = fft.make_output_vec();
-                fft.process(&mut series, &mut freq).unwrap();
+            //     let mut planner = RealFftPlanner::<f64>::new();
+            //     let fft = planner.plan_fft_forward(series.len());
 
-                freq.iter_mut().for_each(|s| *s = *s * s.conj());
+            //     let mut freq = fft.make_output_vec();
+            //     fft.process(&mut series, &mut freq).unwrap();
 
-                let inv_fft = planner.plan_fft_inverse(series.len());
-                let mut autocov = inv_fft.make_output_vec();
-                inv_fft.process(&mut freq, &mut autocov).unwrap();
+            //     freq.iter_mut().for_each(|s| *s = *s * s.conj());
 
-                let c0 = autocov[0];
-                let rho: Vec<f64> = autocov[..self.data.autocorrelation_samples.len()].iter().map(|&c| c / c0).collect();
+            //     let inv_fft = planner.plan_fft_inverse(series.len());
+            //     let mut autocov = inv_fft.make_output_vec();
+            //     inv_fft.process(&mut freq, &mut autocov).unwrap();
 
-                let tau_int = 0.5 + rho[1..].iter().take_while(|&r| *r > 0.0).sum::<f64>();
-                println!("Autocorrelation time: {tau_int}");
-            }
+            //     let c0 = autocov[0];
+            //     let rho: Vec<f64> = autocov[..self.data.autocorrelation_samples.len()].iter().map(|&c| c / c0).collect();
+
+            //     let tau_int = 0.5 + rho[1..].iter().take_while(|&r| *r > 0.0).sum::<f64>();
+            //     println!("Autocorrelation time: {tau_int}");
+            // }
 
             // Record statistics on every sweep.
             self.record_stats(sweep_time, &sweep_timer, i, total_sweeps)?;
@@ -381,6 +400,10 @@ impl<T: ObservableHList> System<T> {
 
     pub fn observables(&self) -> &ObservableStore<T> {
         &self.observables
+    }
+
+    pub fn observables_mut(&mut self) -> &mut ObservableStore<T> {
+        &mut self.observables
     }
 
     /// The current statistics of the simulation.

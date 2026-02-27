@@ -516,6 +516,8 @@ impl<T: ObservableHList> SystemBuilder<T> {
             snapshot: snapshot_state,
         };
 
+        tracing::debug!("{}", std::any::type_name_of_val(&sim.observables));
+
         sim.metrics.sweep_size.inc_by(sim.data.lattice.sweep_size() as u64);
 
         tracing::info!("System initialised");
