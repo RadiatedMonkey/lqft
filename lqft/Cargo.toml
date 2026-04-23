@@ -15,7 +15,7 @@ phf = "0.13.1"
 plotters = "0.3.7"
 prometheus = "0.14.0"
 prometheus_exporter = { git = 'https://github.com/AlexanderThaller/prometheus_exporter.git', rev = 'c49efe614486f998b20eb410ae0caf3e904cf540' }
-rand = "0.10.0"
+rand = "0.10.1"
 rand_xoshiro = "0.8.0"
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
