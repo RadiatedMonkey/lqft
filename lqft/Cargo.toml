@@ -17,7 +17,7 @@ prometheus = "0.14.0"
 prometheus_exporter = { git = 'https://github.com/AlexanderThaller/prometheus_exporter.git', rev = 'c49efe614486f998b20eb410ae0caf3e904cf540' }
 rand = "0.10.1"
 rand_xoshiro = "0.8.0"
-rayon = "1.11.0"
+rayon = "1.12.0"
 serde = { version = "1.0.228", features = ["derive"] }
 sysinfo = "0.38.2"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "macros"] }
