@@ -331,7 +331,8 @@ impl<T: ObservableHList> System<T> {
                     let data = &self.data;
 
                     observables.observe_all(data);
-                    observables.autocorrelation();
+                    todo!();
+                    // observables.autocorrelation();
                 },
                 ObservablePhase::Normal => {
                     todo!()

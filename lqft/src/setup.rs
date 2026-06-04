@@ -387,7 +387,7 @@ impl<T: ObservableHList> SystemBuilder<T> {
         self
     }
 
-    pub fn with_observable<O: Observable>(self) -> SystemBuilder<(T, O)> {
+    pub fn with_observable<O: Observable>(self) -> SystemBuilder<T::Append<O>> {
         tracing::info!("Added observable \"{}\", measuring type {}", O::NAME, std::any::type_name::<O::Output>());
         SystemBuilder {
             observables: self.observables.with::<O>(),

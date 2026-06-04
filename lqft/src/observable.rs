@@ -4,7 +4,7 @@ use std::any::{Any, TypeId};
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use realfft::RealFftPlanner;
-
+use crate::observable_impl::Mean;
 use crate::sim::SystemData;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -51,13 +51,14 @@ impl ObservableMeta {
 
 /// A list of different observables.
 pub trait ObservableHList: 'static {
-    type State;
+    /// The new type when `O` is adjoined to the list.
+    type Append<O: Observable>: ObservableHList;
 
     /// The amount of observables in this list.
     const LEN: usize;
 
     /// Creates a new empty list.
-    fn new() -> Self::State;
+    fn new() -> Self;
 
     /// Determines whether an observable is in the list.
     fn has<O: Observable>() -> bool;
@@ -90,7 +91,7 @@ pub trait ObservableHList: 'static {
 }
 
 impl ObservableHList for () {
-    type State = ();
+    type Append<O: Observable> = (ObservableMeta, O);
 
     const LEN: usize = 0;
 
@@ -123,8 +124,8 @@ impl ObservableHList for () {
     }
 }
 
-impl<O1: Observable> ObservableHList for (O1) {
-    type State = (ObservableMeta, O1);
+impl<O1: Observable> ObservableHList for (ObservableMeta, O1) {
+    type Append<O: Observable> = ((ObservableMeta, O1), (ObservableMeta, O));
 
     const LEN: usize = 1;
 
@@ -135,11 +136,11 @@ impl<O1: Observable> ObservableHList for (O1) {
     }
 
     fn observe(&mut self, system: &SystemData) {
-        <O1 as Observable>::observe(self, system);
+        <O1 as Observable>::observe(&mut self.1, system);
     }
 
     fn autocorrelation<O: Observable>(&self) -> Option<f64> {
-
+        todo!()
     }
 
     // fn autocorrelation<O: Observable>(&self) -> Option<f64> where O::Output: Into<f64> {
@@ -225,7 +226,7 @@ impl<O1: Observable> ObservableHList for (O1) {
     }
 
     fn reserve(&mut self, n: usize) {
-        <Self as Observable>::reserve(self, n);
+        <O1 as Observable>::reserve(&mut self.1, n);
     }
 
     fn state<O: Observable>(&self) -> &O {
@@ -237,12 +238,12 @@ impl<O1: Observable> ObservableHList for (O1) {
     }
 }
 
-impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
-    type State = (OL::State, (ObservableMeta, O1));
+impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, (ObservableMeta, O1)) {
+    type Append<O: Observable> = ((OL, (ObservableMeta, O1)), (ObservableMeta, O));
 
     const LEN: usize = 1 + OL::LEN;
 
-    fn new() -> Self::State {
+    fn new() -> Self {
         (OL::new(), (ObservableMeta::new(), <O1 as Observable>::new()))
     }
 
@@ -251,17 +252,21 @@ impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
     }
 
     fn observe(&mut self, system: &SystemData) {
-        <O1 as Observable>::observe(&mut self.1, system);
+        <O1 as Observable>::observe(&mut self.1.1, system);
         OL::observe(&mut self.0, system);
     }
 
-    fn autocorrelation(&self) {
-        todo!()
+    fn autocorrelation<O: Observable>(&self) -> Option<f64> {
+        if <(ObservableMeta, O1)>::has::<O>() {
+            self.0.autocorrelation::<O>()
+        } else {
+            OL::autocorrelation::<O>(&self.0)
+        }
     }
 
     fn history<O: Observable>(&self) -> &[O::Output] {
-        if O1::has::<O>() {
-            let cast = (&self.1 as &dyn Any)
+        if <(ObservableMeta, O1)>::has::<O>() {
+            let cast = (&self.1.1 as &dyn Any)
                 .downcast_ref::<O>()
                 .expect("O1 != O, this is a bug. In (OL, O1) history");
             <O as Observable>::history(cast)
@@ -271,20 +276,20 @@ impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
     }
 
     fn measured<O: Observable>(&self) -> Option<O::Output> {
-        if O1::has::<O>() {
-            O1::measured::<O>(&self.1)
+        if <(ObservableMeta, O1)>::has::<O>() {
+            <(ObservableMeta, O1)>::measured::<O>(&self.1)
         } else {
             OL::measured::<O>(&self.0)
         }
     }
 
     fn reserve(&mut self, n: usize) {
-        <O1 as Observable>::reserve(&mut self.1, n);
+        <O1 as Observable>::reserve(&mut self.1.1, n);
         <OL as ObservableHList>::reserve(&mut self.0, n);
     }
 
     fn state<O: Observable>(&self) -> &O {
-        if O1::has::<O>() {
+        if <(ObservableMeta, O1)>::has::<O>() {
             (self as &dyn Any).downcast_ref::<O>().expect("State cast failed. This is a bug.")
         } else {
             OL::state::<O>(&self.0)
@@ -292,7 +297,7 @@ impl<OL: ObservableHList, O1: Observable> ObservableHList for (OL, O1) {
     }
 
     fn state_mut<O: Observable>(&mut self) -> &mut O {
-        if O1::has::<O>() {
+        if <(ObservableMeta, O1)>::has::<O>() {
             (self as &mut dyn Any).downcast_mut::<O>().expect("State cast failed. This is a bug.")
         } else {
             OL::state_mut::<O>(&mut self.0)
@@ -324,7 +329,7 @@ impl<Obs: ObservableHList> ObservableBuilder<Obs> {
     }
 
     /// Adds an observable to the builder.
-    pub fn with<O: Observable>(self) -> ObservableBuilder<(Obs, O)> {
+    pub fn with<O: Observable>(self) -> ObservableBuilder<Obs::Append<O>> {
         if self.has::<O>() {
             panic!("Observable \"{}\" has already been registered.", O::NAME);
         }
@@ -369,7 +374,7 @@ pub struct ObservableStore<Obs: ObservableHList> {
     // Treating `Debug` and non-`Debug` observables differently either requires specialisation
     // (which is highly unstable) or autoref specialisation, which is stable but only work with
     // concrete types, not the generics we are dealing with.
-    storage: Obs::State,
+    storage: Obs,
     phase: ObservablePhase
 }
 
@@ -400,10 +405,10 @@ impl<Obs: ObservableHList> ObservableStore<Obs> {
         self.storage.observe(data);
     }
 
+    /// Returns the computed autocorrelation time for the given observable.
     #[inline]
-    pub fn autocorrelation<O: Observable>(&mut self) {
-        let cor = self.storage.autocorrelation::<O>();
-        tracing::info!("{cor:?}");
+    pub fn autocorrelation<O: Observable>(&mut self) -> Option<f64> {
+        self.storage.autocorrelation::<O>()
     }
 
     /// Reserves capacity for `n` additional measurements.
